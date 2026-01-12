@@ -1,0 +1,320 @@
+# Implementation Plan: 私厨预订微信小程序
+
+## Overview
+
+本实现计划将私厨预订小程序分解为可执行的开发任务，采用渐进式开发策略，从基础架构开始，逐步构建吃货端和大厨端功能。使用 UniApp + Vue3 + UniNutUI + Axios 技术栈，配合 Mock 数据进行开发。
+
+## Tasks
+
+- [ ] 1. 项目初始化与基础架构
+  - [x] 1.1 安装项目依赖并配置 UniNutUI
+    - 安装 TypeScript 支持：`npm install typescript`
+    - 安装 nutui-uniapp 依赖：`npm install nutui-uniapp`
+    - 安装 axios 依赖：`npm install axios`
+    - 配置 vite.config.ts 引入 nutui-uniapp
+    - 配置 uni.scss 引入 nutui 样式变量
+    - _Requirements: 1.1, 1.2_
+  - [x] 1.2 创建目录结构和基础配置文件
+    - 创建 api、components、mock、pages、store、utils 目录
+    - 配置 pages.json 路由
+    - 配置全局样式变量（暖色调主题）
+    - _Requirements: 1.1, 19.1_
+  - [x] 1.3 实现请求拦截器和响应拦截器
+    - 创建 api/index.ts 封装 axios
+    - 实现 token 注入逻辑
+    - 实现错误码统一处理
+    - _Requirements: 1.3, 1.4_
+  - [x] 1.4 编写请求拦截器属性测试
+    - **Property 1: Request Interceptor Token Injection**
+    - **Validates: Requirements 1.3**
+  - [x] 1.5 编写响应拦截器属性测试
+    - **Property 2: Response Interceptor Error Handling**
+    - **Validates: Requirements 1.4**
+  - [x] 1.6 实现 Mock 服务框架
+    - 创建 mock/index.ts 入口
+    - 实现 mock 匹配和拦截逻辑
+    - _Requirements: 1.5_
+  - [x] 1.7 编写 Mock 服务属性测试
+    - **Property 3: Mock Service Interception**
+    - **Validates: Requirements 1.5**
+
+- [x] 2. 状态管理与工具函数
+  - [x] 2.1 实现 Pinia Store - 用户状态
+    - 创建 store/user.ts
+    - 实现登录、登出、绑定状态管理
+    - 实现绑定码生成逻辑
+    - _Requirements: 10.7, 17.1_
+  - [x] 2.2 编写绑定码唯一性属性测试
+    - **Property 9: Binding Code Uniqueness**
+    - **Validates: Requirements 10.7, 17.1**
+  - [x] 2.3 实现 Pinia Store - 购物车状态
+    - 创建 store/cart.ts
+    - 实现添加、删除、更新数量、计算总价
+    - _Requirements: 4.1, 4.2, 4.3_
+  - [x] 2.4 编写购物车价格计算属性测试
+    - **Property 4: Cart Price Calculation**
+    - **Validates: Requirements 4.2**
+  - [x] 2.5 编写购物车删除一致性属性测试
+    - **Property 5: Cart Item Removal Consistency**
+    - **Validates: Requirements 4.3**
+  - [x] 2.6 实现工具函数
+    - 创建 utils/storage.ts 本地存储封装
+    - 创建 utils/format.ts 格式化工具
+    - _Requirements: 1.3_
+
+- [x] 3. Checkpoint - 基础架构验证
+  - 确保所有测试通过，如有问题请询问用户
+
+- [x] 4. 共享组件开发
+  - [x] 4.1 实现 DishCard 菜品卡片组件
+    - 显示菜品图片、名称、价格、评分
+    - 支持显示大厨头像和距离
+    - _Requirements: 2.5_
+  - [x] 4.2 实现 OrderCard 订单卡片组件
+    - 显示订单编号、缩略图、状态、总价
+    - 支持操作按钮
+    - _Requirements: 6.2_
+  - [x] 4.3 实现 StatusBar 状态进度条组件
+    - 显示订单状态流程
+    - _Requirements: 7.1_
+  - [x] 4.4 实现 EmptyState 空状态组件
+    - 统一的空状态提示样式
+    - _Requirements: 19.5_
+
+- [x] 5. Mock 数据准备
+  - [x] 5.1 创建菜品 Mock 数据
+    - 创建 mock/dish.ts
+    - 模拟菜品列表、详情、搜索接口
+    - _Requirements: 1.5_
+  - [x] 5.2 创建订单 Mock 数据
+    - 创建 mock/order.ts
+    - 模拟订单列表、详情、状态更新接口
+    - _Requirements: 1.5_
+  - [x] 5.3 创建用户 Mock 数据
+    - 创建 mock/user.ts
+    - 模拟用户信息、绑定关系接口
+    - _Requirements: 1.5_
+
+- [x] 6. 吃货端 - 首页与菜品浏览
+  - [x] 6.1 实现吃货端首页
+    - 搜索栏组件
+    - 轮播图组件
+    - 分类筛选区
+    - 推荐菜品列表
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5_
+  - [x] 6.2 实现菜品详情页
+    - 菜品大图轮播
+    - 菜品信息展示
+    - 日历选择组件
+    - 份数选择
+    - 评价列表
+    - 收藏和加入订单按钮
+    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8_
+
+- [x] 7. 吃货端 - 订单流程
+  - [x] 7.1 实现点菜/预订页
+    - 已选菜品列表
+    - 份数调整和删除
+    - 配送时间选择
+    - 备注输入
+    - 总价计算
+    - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6_
+  - [x] 7.2 实现订单确认与支付页
+    - 订单概要展示
+    - 地址选择
+    - 支付方式展示
+    - 模拟支付流程
+    - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6_
+  - [x] 7.3 实现订单列表页
+    - 状态标签切换
+    - 订单卡片列表
+    - 操作按钮
+    - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5_
+  - [x] 7.4 编写订单状态过滤属性测试
+    - **Property 6: Order Status Filter**
+    - **Validates: Requirements 6.1**
+  - [x] 7.5 实现订单详情页
+    - 状态进度条
+    - 订单详细信息
+    - 操作按钮（根据状态）
+    - _Requirements: 7.1, 7.2, 7.3, 7.4_
+  - [x] 7.6 编写订单操作可用性属性测试
+    - **Property 7: Order Action Availability**
+    - **Validates: Requirements 7.4**
+
+- [x] 8. Checkpoint - 吃货端订单流程验证
+  - 确保所有测试通过，如有问题请询问用户
+
+- [x] 9. 吃货端 - 评价与打赏
+  - [x] 9.1 实现评价页
+    - 五星评分组件
+    - 评论输入框
+    - 图片上传（最多3张）
+    - _Requirements: 8.1, 8.2, 8.3, 8.4_
+  - [x] 9.2 编写评分更新属性测试
+    - **Property 8: Rating Update After Review**
+    - **Validates: Requirements 8.4**
+  - [x] 9.3 实现打赏页
+    - 金额选项（5/10/20/自定义）
+    - 留言输入
+    - 确认打赏
+    - _Requirements: 9.1, 9.2, 9.3_
+
+- [-] 10. 吃货端 - 个人中心
+  - [x] 10.1 实现个人中心页
+    - 用户信息展示
+    - 功能入口列表
+    - 绑定码展示
+    - 已绑定大厨信息
+    - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7_
+  - [x] 10.2 实现绑定大厨功能
+    - 输入绑定码
+    - 绑定确认
+    - 绑定成功通知
+    - _Requirements: 17.2, 17.3_
+  - [x] 10.3 编写一对一绑定约束属性测试
+    - **Property 10: One-to-One Binding Constraint**
+    - **Validates: Requirements 17.4**
+  - [x] 10.4 编写绑定后菜品过滤属性测试
+    - **Property 11: Bound Chef Dish Filter**
+    - **Validates: Requirements 17.5**
+  - [x] 10.5 实现我的收藏页
+    - 收藏菜品列表
+    - _Requirements: 10.3_
+  - [x] 10.6 实现我的地址页
+    - 地址列表
+    - 添加/编辑地址
+    - _Requirements: 10.4_
+  - [x] 10.7 实现打赏记录页
+    - 打赏历史列表
+    - _Requirements: 10.5_
+
+- [x] 11. Checkpoint - 吃货端完整功能验证
+  - 确保所有测试通过，如有问题请询问用户
+
+- [x] 12. 大厨端 - 登录与菜品管理
+  - [x] 12.1 实现大厨登录页
+    - 微信登录按钮
+    - 手机号绑定（可选）
+    - _Requirements: 11.1, 11.2, 11.3_
+  - [x] 12.2 实现菜品管理页
+    - 菜品列表
+    - 上下架切换
+    - 编辑/删除操作
+    - 添加新菜品入口
+    - _Requirements: 12.1, 12.2, 12.3, 12.4_
+  - [x] 12.3 实现发布/编辑菜品页
+    - 菜品表单
+    - 图片上传
+    - 可制作日期设置
+    - 份数上限设置
+    - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.5_
+  - [x] 12.4 编写菜品验证规则属性测试
+    - **Property 13: Dish Validation Rules**
+    - **Validates: Requirements 13.5**
+
+- [x] 13. 大厨端 - 订单管理
+  - [x] 13.1 实现订单管理页
+    - 按状态分类的订单列表
+    - 订单信息展示
+    - 接单/拒单操作
+    - 状态更新操作
+    - _Requirements: 14.1, 14.2, 14.3, 14.4, 14.5_
+  - [x] 13.2 编写订单状态转换属性测试
+    - **Property 12: Order Status Transition Validity**
+    - **Validates: Requirements 14.3, 14.4, 14.5**
+  - [x] 13.3 实现大厨端订单详情页
+    - 订单完整信息
+    - 用户联系信息
+    - 状态操作按钮
+    - _Requirements: 14.2_
+
+- [x] 14. 大厨端 - 收益与个人主页
+  - [x] 14.1 实现收益统计页
+    - 总收益和打赏收益展示
+    - 周/月收益图表
+    - 提现按钮
+    - 收益明细列表
+    - _Requirements: 15.1, 15.2, 15.3, 15.4_
+  - [x] 14.2 编写收益计算属性测试
+    - **Property 14: Earnings Calculation**
+    - **Validates: Requirements 15.1**
+  - [x] 14.3 实现个人主页编辑页
+    - 头像和昵称编辑
+    - 简介和特长编辑
+    - 绑定码展示
+    - _Requirements: 16.1, 16.2, 16.3_
+
+- [x] 15. 大厨端 - 消息通知
+  - [x] 15.1 实现消息通知页
+    - 通知列表
+    - 未读标记
+    - 通知详情
+    - _Requirements: 18.3, 18.4_
+  - [x] 15.2 实现订单通知逻辑
+    - 新订单通知创建
+    - 通知内容包含菜品和时间
+    - _Requirements: 18.1, 18.2_
+  - [x] 15.3 编写订单通知属性测试
+    - **Property 15: Notification on Order Creation**
+    - **Validates: Requirements 18.1, 18.2**
+
+- [x] 16. UI优化与适配
+  - [x] 16.1 实现骨架屏加载效果
+    - 列表页骨架屏
+    - 详情页骨架屏
+    - _Requirements: 19.4_
+  - [x] 16.2 实现 Toast 提示
+    - 操作成功/失败提示
+    - _Requirements: 19.6_
+  - [x] 16.3 屏幕适配优化
+    - 主流手机屏幕适配
+    - _Requirements: 19.7_
+
+- [x] 17. Final Checkpoint - 完整功能验证
+  - 确保所有测试通过，如有问题请询问用户
+
+- [x] 18. 统一登录与角色选择
+  - [x] 18.1 创建统一登录页面
+    - 创建 pages/common/login/index.vue
+    - 实现微信一键登录按钮
+    - 调用微信登录 API 获取用户信息
+    - 登录成功后跳转角色选择页
+    - _Requirements: 11.1, 11.2_
+  - [x] 18.2 创建角色选择页面
+    - 创建 pages/common/role-select/index.vue
+    - 显示"我是吃货"和"我是大厨"两个选项卡片
+    - 选择后保存角色到用户状态
+    - 根据角色跳转到对应首页（吃货端首页/大厨端菜品管理）
+    - _Requirements: 11.4, 11.5, 11.6, 11.7_
+  - [x] 18.3 更新用户状态管理
+    - 修改 store/user.ts 支持角色选择流程
+    - 添加 selectRole 方法
+    - 添加角色持久化存储
+    - _Requirements: 11.5_
+  - [x] 18.4 更新路由配置
+    - 修改 pages.json 添加统一登录页和角色选择页
+    - 设置统一登录页为首页
+    - 配置登录拦截逻辑
+    - _Requirements: 11.1_
+  - [x] 18.5 实现登录状态检查
+    - 添加全局登录状态检查
+    - 未登录用户自动跳转登录页
+    - 已登录但未选角色用户跳转角色选择页
+    - 已登录且已选角色用户直接进入对应首页
+    - _Requirements: 11.8_
+  - [x] 18.6 编写角色选择属性测试
+    - **Property 16: Role Selection Persistence**
+    - 验证角色选择后正确保存和跳转
+    - **Validates: Requirements 11.5, 11.6, 11.7**
+
+- [ ] 19. Final Checkpoint - 统一登录功能验证
+  - 确保所有测试通过，如有问题请询问用户
+
+## Notes
+
+- 所有任务均为必需任务，确保完整的测试覆盖
+- 每个任务都引用了具体的需求编号以便追溯
+- Checkpoint 任务用于阶段性验证
+- 属性测试验证核心业务逻辑的正确性
+- 单元测试验证具体示例和边界情况
