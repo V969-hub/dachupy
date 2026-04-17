@@ -6,7 +6,7 @@
 from typing import Optional, List, Any
 from datetime import datetime
 from decimal import Decimal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ==================== 请求模型 ====================
@@ -59,8 +59,7 @@ class OrderItemResponse(BaseModel):
     quantity: int
     subtotal: float
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserBrief(BaseModel):
@@ -71,8 +70,7 @@ class UserBrief(BaseModel):
     phone: Optional[str] = None
     rating: Optional[float] = None
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AddressSnapshot(BaseModel):
@@ -102,8 +100,7 @@ class OrderResponse(BaseModel):
     foodie: Optional[UserBrief] = None
     chef: Optional[UserBrief] = None
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class OrderListItem(BaseModel):
@@ -119,8 +116,7 @@ class OrderListItem(BaseModel):
     created_at: Optional[str] = None
     chef: Optional[UserBrief] = None
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class OrderCreateResponse(BaseModel):

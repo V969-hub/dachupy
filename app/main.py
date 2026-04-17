@@ -1,3 +1,7 @@
+import asyncio
+from contextlib import asynccontextmanager, suppress
+import sys
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -7,6 +11,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
 import os
 
+from app.config import settings
+from app.database import SessionLocal
 from app.middleware.logging import RequestLoggingMiddleware
 from app.api.auth import router as auth_router
 from app.api.user import router as user_router
@@ -21,6 +27,8 @@ from app.api.notification import router as notification_router
 from app.api.earnings import router as earnings_router
 from app.api.favorite import router as favorite_router
 from app.api.upload import router as upload_router
+from app.api.couple import router as couple_router
+from app.services.couple_service import sync_all_due_notifications
 
 # 配置日志
 logging.basicConfig(
@@ -28,6 +36,30 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("private_chef")
+
+
+def should_start_background_jobs() -> bool:
+    if not settings.COUPLE_NOTIFICATION_SYNC_ENABLED:
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    if "pytest" in sys.modules:
+        return False
+    return True
+
+
+async def couple_notification_sync_worker() -> None:
+    interval_seconds = max(settings.COUPLE_NOTIFICATION_SYNC_INTERVAL_SECONDS, 10)
+
+    while True:
+        try:
+            with SessionLocal() as db:
+                processed_count = sync_all_due_notifications(db)
+            logger.debug("情侣提醒后台同步完成，处理关系数: %s", processed_count)
+        except Exception:
+            logger.exception("情侣提醒后台同步失败")
+
+        await asyncio.sleep(interval_seconds)
 
 # API文档标签配置
 tags_metadata = [
@@ -84,10 +116,38 @@ tags_metadata = [
         "description": "菜品收藏管理接口"
     },
     {
+        "name": "情侣",
+        "description": "情侣备忘录、纪念日与绑定关系接口"
+    },
+    {
         "name": "Upload",
         "description": "文件上传接口"
     }
 ]
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    background_task = None
+    logger.info("私厨预订小程序后端API服务启动")
+    logger.info("API文档地址: /docs")
+    logger.info("ReDoc文档地址: /redoc")
+
+    if should_start_background_jobs():
+        background_task = asyncio.create_task(couple_notification_sync_worker())
+        logger.info(
+            "情侣提醒后台同步已启动，轮询间隔 %s 秒",
+            max(settings.COUPLE_NOTIFICATION_SYNC_INTERVAL_SECONDS, 10)
+        )
+
+    yield
+
+    if background_task is not None:
+        background_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await background_task
+
+    logger.info("私厨预订小程序后端API服务关闭")
+
 
 # 创建FastAPI应用
 app = FastAPI(
@@ -151,6 +211,7 @@ Authorization: Bearer <token>
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
     openapi_tags=tags_metadata,
     contact={
         "name": "私厨预订小程序",
@@ -269,19 +330,4 @@ app.include_router(notification_router, prefix="/api")
 app.include_router(earnings_router, prefix="/api")
 app.include_router(favorite_router, prefix="/api")
 app.include_router(upload_router, prefix="/api")
-
-
-# 启动事件
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时执行"""
-    logger.info("私厨预订小程序后端API服务启动")
-    logger.info("API文档地址: /docs")
-    logger.info("ReDoc文档地址: /redoc")
-
-
-# 关闭事件
-@app.on_event("shutdown")
-async def shutdown_event():
-    """应用关闭时执行"""
-    logger.info("私厨预订小程序后端API服务关闭")
+app.include_router(couple_router, prefix="/api")

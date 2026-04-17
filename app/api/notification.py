@@ -18,6 +18,7 @@ from app.services.notification_service import (
     get_user_notifications,
     get_notification_by_id,
     get_unread_count,
+    get_unread_count_by_type,
     mark_as_read,
     mark_all_as_read,
     notification_to_dict,
@@ -46,7 +47,8 @@ async def list_notifications(
     Query Parameters:
     - page: 页码，默认1
     - page_size: 每页数量，默认20，最大100
-    - type: 通知类型筛选（可选）：new_order, order_status, binding, tip, system
+    - type: 通知类型筛选（可选）：new_order, order_status, binding, tip, system,
+      couple_memo, couple_anniversary, couple_bind
     
     Requirements: 13.4
     """
@@ -73,6 +75,7 @@ async def list_notifications(
 
 @router.get("/unread-count")
 async def get_unread_notification_count(
+    type: Optional[str] = Query(None, description="通知类型筛选"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -83,6 +86,9 @@ async def get_unread_notification_count(
     """
     try:
         count = get_unread_count(db, current_user.id)
+        if type:
+            count = get_unread_count_by_type(db, current_user.id, type)
+
         return success_response(data={"unread_count": count})
     except Exception as e:
         return error_response(500, f"获取未读数量失败: {str(e)}")

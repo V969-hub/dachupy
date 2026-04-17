@@ -26,6 +26,7 @@ class User(Base):
     phone = Column(String(20), nullable=True, comment="手机号")
     role = Column(Enum("foodie", "chef", name="user_role"), default="foodie", comment="角色")
     binding_code = Column(String(8), unique=True, nullable=False, comment="专属绑定码")
+    couple_code = Column(String(8), unique=True, nullable=True, comment="情侣邀请码")
     introduction = Column(Text, nullable=True, comment="大厨简介")
     specialties = Column(JSON, nullable=True, comment="大厨擅长菜系")
     rating = Column(DECIMAL(2, 1), default=5.0, comment="大厨评分")

@@ -67,16 +67,19 @@ class OSSStorageService(CloudStorageService):
     """阿里云 OSS 存储服务"""
     
     def __init__(self):
+        # 延迟导入，避免在不使用 OSS 时导入失败
         try:
             import oss2
             self.oss2 = oss2
+            
+            # 初始化 OSS 客户端
+            auth = oss2.Auth(settings.OSS_ACCESS_KEY_ID, settings.OSS_ACCESS_KEY_SECRET)
+            self.bucket = oss2.Bucket(auth, settings.OSS_ENDPOINT, settings.OSS_BUCKET_NAME)
+            self.domain = settings.OSS_DOMAIN or f"https://{settings.OSS_BUCKET_NAME}.{settings.OSS_ENDPOINT}"
         except ImportError:
             raise ImportError("请安装 oss2: pip install oss2")
-        
-        # 初始化 OSS 客户端
-        auth = oss2.Auth(settings.OSS_ACCESS_KEY_ID, settings.OSS_ACCESS_KEY_SECRET)
-        self.bucket = oss2.Bucket(auth, settings.OSS_ENDPOINT, settings.OSS_BUCKET_NAME)
-        self.domain = settings.OSS_DOMAIN or f"https://{settings.OSS_BUCKET_NAME}.{settings.OSS_ENDPOINT}"
+        except Exception as e:
+            raise Exception(f"OSS 初始化失败: {str(e)}")
     
     async def upload_file(self, file: UploadFile, filename: str) -> str:
         """上传文件到 OSS"""

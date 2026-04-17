@@ -15,6 +15,17 @@ from sqlalchemy import desc
 
 from app.models.notification import Notification
 
+VALID_NOTIFICATION_TYPES = [
+    "new_order",
+    "order_status",
+    "binding",
+    "tip",
+    "system",
+    "couple_memo",
+    "couple_anniversary",
+    "couple_bind",
+]
+
 
 class NotificationServiceError(Exception):
     """通知服务异常"""
@@ -98,6 +109,22 @@ def get_unread_count(db: Session, user_id: str) -> int:
     ).count()
 
 
+def get_unread_count_by_type(
+    db: Session,
+    user_id: str,
+    notification_type: Optional[str] = None
+) -> int:
+    query = db.query(Notification).filter(
+        Notification.user_id == user_id,
+        Notification.is_read == False
+    )
+
+    if notification_type:
+        query = query.filter(Notification.type == notification_type)
+
+    return query.count()
+
+
 def mark_as_read(db: Session, notification: Notification, user_id: str) -> Notification:
     """
     标记通知为已读。
@@ -175,8 +202,7 @@ def create_notification(
     Requirements: 13.1, 13.2, 13.3
     """
     # 验证通知类型
-    valid_types = ["new_order", "order_status", "binding", "tip", "system"]
-    if notification_type not in valid_types:
+    if notification_type not in VALID_NOTIFICATION_TYPES:
         raise NotificationServiceError(f"无效的通知类型: {notification_type}")
     
     notification = Notification(

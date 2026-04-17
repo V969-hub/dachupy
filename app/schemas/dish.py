@@ -6,7 +6,7 @@
 from typing import Optional, List
 from decimal import Decimal
 from datetime import date
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ==================== 请求模型 ====================
@@ -53,8 +53,7 @@ class ChefInfo(BaseModel):
     introduction: Optional[str] = None
     specialties: List[str] = []
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DishResponse(BaseModel):
@@ -77,8 +76,7 @@ class DishResponse(BaseModel):
     created_at: Optional[str] = None
     chef: Optional[ChefInfo] = None
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DishListResponse(BaseModel):
@@ -95,5 +93,4 @@ class DishListResponse(BaseModel):
     is_favorited: bool = False
     chef: Optional[ChefInfo] = None
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

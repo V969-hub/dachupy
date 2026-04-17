@@ -6,7 +6,7 @@ Requirements:
 - 3.1-3.3: User profile schemas
 """
 from typing import Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ============ Authentication Schemas ============
@@ -16,27 +16,48 @@ class LoginRequest(BaseModel):
     code: str = Field(..., description="微信登录code")
     role: str = Field(default="foodie", description="用户角色: foodie 或 chef")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "code": "wx_login_code_from_miniprogram",
                 "role": "foodie"
             }
         }
+    )
+
+
+class AccountLoginRequest(BaseModel):
+    """Request schema for account-password login."""
+    account: str = Field(..., description="用户账号")
+    password: str = Field(..., description="用户密码（当前不校验）")
+    role: str = Field(default="foodie", description="用户角色: foodie 或 chef")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "account": "demo_user",
+                "password": "any_password",
+                "role": "foodie"
+            }
+        }
+    )
 
 
 class BindPhoneRequest(BaseModel):
     """Request schema for binding phone number."""
-    encrypted_data: str = Field(..., description="微信加密数据")
-    iv: str = Field(..., description="初始向量")
+    encrypted_data: Optional[str] = Field(default=None, description="微信加密数据")
+    iv: Optional[str] = Field(default=None, description="初始向量")
+    phone: Optional[str] = Field(default=None, description="直接绑定的手机号（H5/dev）")
+    verify_code: Optional[str] = Field(default=None, description="短信验证码（当前仅校验格式）")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
-                "encrypted_data": "base64_encrypted_data",
-                "iv": "base64_iv"
+                "phone": "13800138000",
+                "verify_code": "123456"
             }
         }
+    )
 
 
 class BoundChefInfo(BaseModel):
@@ -46,8 +67,7 @@ class BoundChefInfo(BaseModel):
     avatar: str
     rating: float
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserInfo(BaseModel):
@@ -64,8 +84,7 @@ class UserInfo(BaseModel):
     total_orders: Optional[int] = None
     bound_chef: Optional[BoundChefInfo] = None
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LoginResponse(BaseModel):
@@ -83,8 +102,8 @@ class UserProfileUpdate(BaseModel):
     introduction: Optional[str] = Field(None, description="大厨简介")
     specialties: Optional[List[str]] = Field(None, description="擅长菜系")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "nickname": "张大厨",
                 "avatar": "https://example.com/avatar.jpg",
@@ -92,3 +111,4 @@ class UserProfileUpdate(BaseModel):
                 "specialties": ["川菜", "粤菜"]
             }
         }
+    )

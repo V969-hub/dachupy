@@ -21,7 +21,17 @@ class Notification(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String(36), ForeignKey("users.id"), nullable=False, comment="用户ID")
     type = Column(
-        Enum("new_order", "order_status", "binding", "tip", "system", name="notification_type"),
+        Enum(
+            "new_order",
+            "order_status",
+            "binding",
+            "tip",
+            "system",
+            "couple_memo",
+            "couple_anniversary",
+            "couple_bind",
+            name="notification_type"
+        ),
         nullable=False,
         comment="通知类型"
     )

@@ -1,5 +1,5 @@
 from typing import TypeVar, Generic, Optional, List, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 T = TypeVar('T')
 
@@ -13,14 +13,15 @@ class ApiResponse(BaseModel, Generic[T]):
     message: str = "success"
     data: Optional[T] = None
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "code": 200,
                 "message": "success",
                 "data": {}
             }
         }
+    )
 
 
 class PageInfo(BaseModel):
@@ -30,8 +31,8 @@ class PageInfo(BaseModel):
     total: int
     total_pages: int
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "page": 1,
                 "page_size": 10,
@@ -39,6 +40,7 @@ class PageInfo(BaseModel):
                 "total_pages": 10
             }
         }
+    )
 
 
 class PaginatedResponse(BaseModel, Generic[T]):
@@ -51,8 +53,8 @@ class PaginatedResponse(BaseModel, Generic[T]):
     data: Optional[List[T]] = None
     page_info: Optional[PageInfo] = None
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "code": 200,
                 "message": "success",
@@ -65,6 +67,7 @@ class PaginatedResponse(BaseModel, Generic[T]):
                 }
             }
         }
+    )
 
 
 def success_response(data: Any = None, message: str = "success") -> dict:

@@ -29,7 +29,10 @@ EXPECTED_TABLES = [
     "addresses",
     "bindings",
     "notifications",
-    "favorites"
+    "favorites",
+    "couple_relationships",
+    "couple_memos",
+    "couple_anniversaries",
 ]
 
 
@@ -57,7 +60,8 @@ def create_tables():
     from app.database import engine, Base
     from app.models import (
         User, Dish, DailyDishQuantity, Order, OrderItem,
-        Review, Tip, Address, Binding, Notification, Favorite
+        Review, Tip, Address, Binding, Notification, Favorite,
+        CoupleRelationship, CoupleMemo, CoupleAnniversary
     )
     
     print("使用 SQLAlchemy 创建数据库表...")
@@ -65,7 +69,8 @@ def create_tables():
     # Import all models to ensure they are registered with Base
     models = [
         User, Dish, DailyDishQuantity, Order, OrderItem,
-        Review, Tip, Address, Binding, Notification, Favorite
+        Review, Tip, Address, Binding, Notification, Favorite,
+        CoupleRelationship, CoupleMemo, CoupleAnniversary
     ]
     
     print(f"已注册模型: {[m.__tablename__ for m in models]}")
@@ -84,7 +89,8 @@ def drop_tables():
     from app.database import engine, Base
     from app.models import (
         User, Dish, DailyDishQuantity, Order, OrderItem,
-        Review, Tip, Address, Binding, Notification, Favorite
+        Review, Tip, Address, Binding, Notification, Favorite,
+        CoupleRelationship, CoupleMemo, CoupleAnniversary
     )
     
     print("删除所有数据库表...")

@@ -6,7 +6,7 @@ Requirements:
 - 2.6: Return 401 error for invalid/expired tokens
 - 3.4: Generate unique binding code for each user
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import secrets
 import string
@@ -14,6 +14,10 @@ import string
 from jose import JWTError, jwt
 
 from app.config import settings
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def create_token(user_id: str, role: str, expires_delta: Optional[timedelta] = None) -> str:
@@ -31,15 +35,15 @@ def create_token(user_id: str, role: str, expires_delta: Optional[timedelta] = N
     Requirements: 2.5
     """
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = _utc_now() + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
+        expire = _utc_now() + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
     
     to_encode = {
         "sub": user_id,
         "role": role,
         "exp": expire,
-        "iat": datetime.utcnow()
+        "iat": _utc_now()
     }
     
     encoded_jwt = jwt.encode(

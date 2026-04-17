@@ -10,7 +10,7 @@ Requirements:
 """
 from typing import Optional
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -44,8 +44,8 @@ class AddressCreate(BaseModel):
     detail: str = Field(..., min_length=1, max_length=256, description="详细地址")
     is_default: bool = Field(default=False, description="是否设为默认地址")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "name": "张三",
                 "phone": "13800138000",
@@ -56,6 +56,7 @@ class AddressCreate(BaseModel):
                 "is_default": True
             }
         }
+    )
 
 
 class AddressUpdate(BaseModel):
@@ -68,14 +69,15 @@ class AddressUpdate(BaseModel):
     detail: Optional[str] = Field(None, min_length=1, max_length=256, description="详细地址")
     is_default: Optional[bool] = Field(None, description="是否设为默认地址")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "name": "李四",
                 "phone": "13900139000",
                 "detail": "科技园北区YY栋YY号"
             }
         }
+    )
 
 
 # ============ API接口 ============
