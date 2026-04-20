@@ -24,6 +24,7 @@ VALID_NOTIFICATION_TYPES = [
     "couple_memo",
     "couple_anniversary",
     "couple_bind",
+    "couple_date_plan",
 ]
 
 
@@ -154,23 +155,29 @@ def mark_as_read(db: Session, notification: Notification, user_id: str) -> Notif
 
 
 
-def mark_all_as_read(db: Session, user_id: str) -> int:
+def mark_all_as_read(db: Session, user_id: str, notification_type: Optional[str] = None) -> int:
     """
     标记用户所有通知为已读。
     
     Args:
         db: 数据库会话
         user_id: 用户ID
+        notification_type: 通知类型筛选（可选）
         
     Returns:
         更新的通知数量
         
     Requirements: 13.5
     """
-    result = db.query(Notification).filter(
+    query = db.query(Notification).filter(
         Notification.user_id == user_id,
         Notification.is_read == False
-    ).update({"is_read": True})
+    )
+
+    if notification_type:
+        query = query.filter(Notification.type == notification_type)
+
+    result = query.update({"is_read": True})
     
     db.commit()
     

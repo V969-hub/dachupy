@@ -30,6 +30,7 @@ class Notification(Base):
             "couple_memo",
             "couple_anniversary",
             "couple_bind",
+            "couple_date_plan",
             name="notification_type"
         ),
         nullable=False,

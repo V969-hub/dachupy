@@ -222,11 +222,12 @@ class OrderService:
         }
         
         # 创建订单
+        initial_status = "pending" if total_price <= Decimal("0.00") else "unpaid"
         order = Order(
             order_no=order_no,
             foodie_id=foodie_id,
             chef_id=chef_id,
-            status="unpaid",
+            status=initial_status,
             total_price=total_price,
             delivery_time=delivery_time,
             address_snapshot=address_snapshot,
@@ -255,6 +256,14 @@ class OrderService:
                 item.get("quantity", 1)
             )
         
+        if initial_status == "pending":
+            self._create_order_notification(
+                order,
+                "new_order",
+                "新订单",
+                f"您有一个新订单，订单号: {order.order_no}"
+            )
+
         self.db.commit()
         self.db.refresh(order)
         

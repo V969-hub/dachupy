@@ -2,7 +2,7 @@
 
 ## 概述
 
-情侣备忘录 MVP 后端采用现有 FastAPI + SQLAlchemy 架构实现，在 `users` 表上新增 `couple_code` 字段，并新增情侣关系、备忘录、纪念日三张表。站内提醒通过复用 `notifications` 表的 `system` 类型完成。
+情侣备忘录 MVP 后端采用现有 FastAPI + SQLAlchemy 架构实现，在 `users` 表上新增 `couple_code` 字段，并新增情侣关系、备忘录、纪念日、约饭计划四张表。站内提醒通过 `notifications` 表的情侣通知类型完成。
 
 ## 架构
 
@@ -14,7 +14,7 @@
   -> Couple Router
   -> Couple Service
   -> Couple Models
-  -> notifications / users / couple_* tables
+  -> notifications / users / orders / couple_* tables
 ```
 
 ### 新增数据表
@@ -59,6 +59,21 @@
 - `created_at`
 - `updated_at`
 
+#### couple_date_plans
+
+- `id`
+- `relationship_id`
+- `title`
+- `plan_at`
+- `location`
+- `note`
+- `anniversary_id`
+- `order_id`
+- `status`
+- `created_by`
+- `created_at`
+- `updated_at`
+
 ## 接口设计
 
 ### 绑定相关
@@ -84,6 +99,15 @@
 - `PUT /api/couple/anniversaries/{anniversary_id}`
 - `DELETE /api/couple/anniversaries/{anniversary_id}`
 
+### 约饭计划
+
+- `GET /api/couple/date-plans`
+- `POST /api/couple/date-plans`
+- `GET /api/couple/date-plans/{plan_id}`
+- `PUT /api/couple/date-plans/{plan_id}`
+- `PUT /api/couple/date-plans/{plan_id}/status`
+- `DELETE /api/couple/date-plans/{plan_id}`
+
 ### 首页聚合
 
 - `GET /api/couple/dashboard`
@@ -106,6 +130,10 @@
 
 首页接口在未绑定时也必须返回结构完整的空数据，便于前端直接渲染。
 
+### 规则 5：约饭计划关联约束
+
+约饭计划关联的纪念日必须属于当前情侣关系；关联的订单必须由情侣双方中的任一方创建。
+
 ## 错误处理
 
 - 未绑定关系：返回 `400`
@@ -119,5 +147,6 @@
 - 绑定流程测试
 - 备忘录 CRUD 测试
 - 纪念日 CRUD 测试
+- 约饭计划 CRUD 测试
 - 首页聚合结构测试
 - 提醒去重测试

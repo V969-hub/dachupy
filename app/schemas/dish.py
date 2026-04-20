@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class DishCreateRequest(BaseModel):
     """创建菜品请求"""
     name: str = Field(..., min_length=1, max_length=128, description="菜品名称")
-    price: Decimal = Field(..., gt=0, description="价格")
+    price: Decimal = Field(..., ge=0, description="价格")
     images: List[str] = Field(..., min_length=1, description="图片URL列表")
     description: Optional[str] = Field(None, description="描述")
     ingredients: Optional[List[str]] = Field(None, description="食材列表")
@@ -27,7 +27,7 @@ class DishCreateRequest(BaseModel):
 class DishUpdateRequest(BaseModel):
     """更新菜品请求"""
     name: Optional[str] = Field(None, min_length=1, max_length=128, description="菜品名称")
-    price: Optional[Decimal] = Field(None, gt=0, description="价格")
+    price: Optional[Decimal] = Field(None, ge=0, description="价格")
     images: Optional[List[str]] = Field(None, description="图片URL列表")
     description: Optional[str] = Field(None, description="描述")
     ingredients: Optional[List[str]] = Field(None, description="食材列表")

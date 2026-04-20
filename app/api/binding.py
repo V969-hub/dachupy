@@ -31,6 +31,7 @@ class BindingCodeRequest(BaseModel):
     binding_code: str = Field(..., min_length=1, max_length=8, description="大厨的绑定码")
 
 
+@router.post("/binding")
 @router.post("/bindingcode")
 async def bind_chef(
     request: BindingCodeRequest,

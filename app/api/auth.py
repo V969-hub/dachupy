@@ -32,6 +32,7 @@ from app.middleware.auth import get_current_user
 router = APIRouter(prefix="/auth", tags=["认证"])
 VALID_ROLES = {"foodie", "chef"}
 PHONE_PATTERN = re.compile(r"^1[3-9]\d{9}$")
+MOCK_WECHAT_CODES = {"the code is a mock one", "mock", "test", "mock_code"}
 
 
 def _get_user_info(user: User, db: Session) -> UserInfo:
@@ -124,6 +125,12 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
     invalid_role_response = _validate_role(request.role)
     if invalid_role_response:
         return invalid_role_response
+
+    if request.code.strip() in MOCK_WECHAT_CODES:
+        return error_response(
+            400,
+            "Mock WeChat code is not supported on this endpoint. Use a real uni.login code in WeChat Mini Program, or use /api/auth/login/account for local/H5 testing."
+        )
     
     try:
         # Exchange code for WeChat session

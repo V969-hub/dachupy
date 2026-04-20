@@ -126,6 +126,7 @@ async def mark_notification_read(
 
 @router.put("/read-all")
 async def mark_all_notifications_read(
+    type: Optional[str] = Query(None, description="通知类型筛选"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -135,7 +136,7 @@ async def mark_all_notifications_read(
     Requirements: 13.5
     """
     try:
-        updated_count = mark_all_as_read(db, current_user.id)
+        updated_count = mark_all_as_read(db, current_user.id, type)
         return success_response(
             data={"updated_count": updated_count},
             message=f"已将{updated_count}条通知标记为已读"

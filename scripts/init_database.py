@@ -33,7 +33,19 @@ EXPECTED_TABLES = [
     "couple_relationships",
     "couple_memos",
     "couple_anniversaries",
+    "couple_date_plans",
+    "couple_restaurant_categories",
+    "couple_restaurant_items",
 ]
+
+REQUIRED_COLUMNS = {
+    "users": ["couple_code"],
+}
+
+LATEST_NOTIFICATION_TYPES = (
+    "'new_order', 'order_status', 'binding', 'tip', 'system', "
+    "'couple_memo', 'couple_anniversary', 'couple_bind', 'couple_date_plan'"
+)
 
 
 def create_database_if_not_exists():
@@ -61,7 +73,8 @@ def create_tables():
     from app.models import (
         User, Dish, DailyDishQuantity, Order, OrderItem,
         Review, Tip, Address, Binding, Notification, Favorite,
-        CoupleRelationship, CoupleMemo, CoupleAnniversary
+        CoupleRelationship, CoupleMemo, CoupleAnniversary,
+        CoupleDatePlan, CoupleRestaurantCategory, CoupleRestaurantItem,
     )
     
     print("使用 SQLAlchemy 创建数据库表...")
@@ -70,13 +83,15 @@ def create_tables():
     models = [
         User, Dish, DailyDishQuantity, Order, OrderItem,
         Review, Tip, Address, Binding, Notification, Favorite,
-        CoupleRelationship, CoupleMemo, CoupleAnniversary
+        CoupleRelationship, CoupleMemo, CoupleAnniversary,
+        CoupleDatePlan, CoupleRestaurantCategory, CoupleRestaurantItem,
     ]
     
     print(f"已注册模型: {[m.__tablename__ for m in models]}")
     
     # Create all tables
     Base.metadata.create_all(bind=engine)
+    ensure_schema_compatibility(engine)
     
     print("数据库表创建成功!")
     print("\n已创建的表:")
@@ -90,7 +105,8 @@ def drop_tables():
     from app.models import (
         User, Dish, DailyDishQuantity, Order, OrderItem,
         Review, Tip, Address, Binding, Notification, Favorite,
-        CoupleRelationship, CoupleMemo, CoupleAnniversary
+        CoupleRelationship, CoupleMemo, CoupleAnniversary,
+        CoupleDatePlan, CoupleRestaurantCategory, CoupleRestaurantItem,
     )
     
     print("删除所有数据库表...")
@@ -136,6 +152,68 @@ def execute_sql_script():
     return True
 
 
+def _column_exists(inspector, table_name: str, column_name: str) -> bool:
+    try:
+        columns = inspector.get_columns(table_name)
+    except Exception:
+        return False
+    return any(column["name"] == column_name for column in columns)
+
+
+def _index_exists(inspector, table_name: str, index_name: str) -> bool:
+    try:
+        indexes = inspector.get_indexes(table_name)
+    except Exception:
+        return False
+    return any(index["name"] == index_name for index in indexes)
+
+
+def _unique_index_on_columns_exists(inspector, table_name: str, column_names: list[str]) -> bool:
+    try:
+        indexes = inspector.get_indexes(table_name)
+    except Exception:
+        return False
+    target_columns = list(column_names)
+    return any(
+        bool(index.get("unique")) and list(index.get("column_names") or []) == target_columns
+        for index in indexes
+    )
+
+
+def ensure_schema_compatibility(engine) -> None:
+    """Apply additive schema upgrades for databases initialized by older scripts."""
+    inspector = inspect(engine)
+    existing_tables = inspector.get_table_names()
+
+    with engine.begin() as conn:
+        if "users" in existing_tables and not _column_exists(inspector, "users", "couple_code"):
+            conn.execute(
+                text(
+                    "ALTER TABLE users "
+                    "ADD COLUMN couple_code VARCHAR(8) NULL COMMENT '情侣邀请码' AFTER binding_code"
+                )
+            )
+            print("已为 users 表补充 couple_code 字段")
+
+        inspector = inspect(engine)
+        if (
+            "users" in inspector.get_table_names()
+            and not _index_exists(inspector, "users", "uq_users_couple_code")
+            and not _unique_index_on_columns_exists(inspector, "users", ["couple_code"])
+        ):
+            conn.execute(text("ALTER TABLE users ADD UNIQUE INDEX uq_users_couple_code (couple_code)"))
+            print("已为 users.couple_code 补充唯一索引")
+
+        if "notifications" in existing_tables:
+            conn.execute(
+                text(
+                    "ALTER TABLE notifications "
+                    f"MODIFY COLUMN type ENUM({LATEST_NOTIFICATION_TYPES}) NOT NULL COMMENT '通知类型'"
+                )
+            )
+            print("已同步 notifications.type 的枚举值")
+
+
 def verify_tables():
     """Verify that all expected tables exist in the database."""
     # First ensure database exists
@@ -154,12 +232,22 @@ def verify_tables():
     
     # Check for missing tables
     missing_tables = [t for t in EXPECTED_TABLES if t not in existing_tables]
+    missing_columns = []
+    for table_name, columns in REQUIRED_COLUMNS.items():
+        if table_name not in existing_tables:
+            continue
+        for column_name in columns:
+            if not _column_exists(inspector, table_name, column_name):
+                missing_columns.append(f"{table_name}.{column_name}")
     
     if missing_tables:
         print(f"\n⚠️  缺少的表: {missing_tables}")
         return False
+    if missing_columns:
+        print(f"\n⚠️  缺少的字段: {missing_columns}")
+        return False
     else:
-        print(f"\n✓ 所有 {len(EXPECTED_TABLES)} 个预期的表都已存在!")
+        print(f"\n✓ 所有 {len(EXPECTED_TABLES)} 个预期的表都已存在，关键字段也已齐全!")
         return True
 
 
