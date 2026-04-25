@@ -55,6 +55,7 @@ async def update_profile(
     可更新字段：
     - nickname: 昵称（所有用户）
     - avatar: 头像URL（所有用户）
+    - phone: 手机号（所有用户）
     - introduction: 简介（仅大厨）
     - specialties: 擅长菜系（仅大厨）
     
@@ -66,6 +67,11 @@ async def update_profile(
             user=current_user,
             nickname=request.nickname,
             avatar=request.avatar,
+            phone=request.phone,
+            is_open=request.is_open,
+            service_start_time=request.service_start_time,
+            service_end_time=request.service_end_time,
+            rest_notice=request.rest_notice,
             introduction=request.introduction,
             specialties=request.specialties
         )

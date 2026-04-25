@@ -4,6 +4,9 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
+
+    APP_ENV: str = "development"
+    ALLOW_INSECURE_STARTUP: bool = False
     
     # Database Configuration
     DATABASE_URL_OVERRIDE: str = ""
@@ -17,6 +20,11 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = "your-super-secret-key-change-in-production"
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+
+    # Admin Console Configuration
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_PASSWORD: str = "ChangeMe123!"
+    ADMIN_DISPLAY_NAME: str = "系统管理员"
     
     # WeChat Configuration
     WECHAT_APP_ID: str = ""
@@ -32,6 +40,7 @@ class Settings(BaseSettings):
     STORAGE_TYPE: str = "local"  # local, oss, cos, qiniu
 
     # 情侣提醒后台同步配置
+    DATABASE_SCHEMA_SYNC_ENABLED: bool = True
     COUPLE_NOTIFICATION_SYNC_ENABLED: bool = True
     COUPLE_NOTIFICATION_SYNC_INTERVAL_SECONDS: int = 60
     

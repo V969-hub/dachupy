@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import text, inspect, create_engine
 from app.config import settings
+from app.schema_sync import create_database_if_missing, sync_database_schema
 
 # Expected tables based on models
 EXPECTED_TABLES = [
@@ -24,6 +25,7 @@ EXPECTED_TABLES = [
     "daily_dish_quantities",
     "orders",
     "order_items",
+    "wallet_transactions",
     "reviews",
     "tips",
     "addresses",
@@ -36,10 +38,22 @@ EXPECTED_TABLES = [
     "couple_date_plans",
     "couple_restaurant_categories",
     "couple_restaurant_items",
+    "couple_restaurant_cart_items",
 ]
 
 REQUIRED_COLUMNS = {
-    "users": ["couple_code"],
+    "users": [
+        "couple_code",
+        "is_open",
+        "service_start_time",
+        "service_end_time",
+        "rest_notice",
+        "virtual_coin_balance",
+    ],
+    "orders": [
+        "payment_method",
+        "wallet_paid_amount",
+    ],
 }
 
 LATEST_NOTIFICATION_TYPES = (
@@ -49,54 +63,27 @@ LATEST_NOTIFICATION_TYPES = (
 
 
 def create_database_if_not_exists():
-    """Create the database if it doesn't exist."""
-    # Connect to MySQL server without specifying database
-    server_url = f"mysql+pymysql://{settings.DB_USER}:{settings.DB_PASSWORD}@{settings.DB_HOST}:{settings.DB_PORT}/"
-    server_engine = create_engine(server_url)
-    
-    with server_engine.connect() as conn:
-        # Create database if not exists
-        conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {settings.DB_NAME} DEFAULT CHARACTER SET utf8mb4 DEFAULT COLLATE utf8mb4_unicode_ci"))
-        conn.commit()
-        print(f"数据库 '{settings.DB_NAME}' 已创建或已存在")
-    
-    server_engine.dispose()
+    """Ensure the configured database exists and is reachable."""
+    from app.database import engine
+
+    create_database_if_missing(engine)
+    print(f"数据库 '{settings.DB_NAME}' 已就绪")
 
 
 def create_tables():
-    """Create all database tables using SQLAlchemy models."""
+    """Create or patch all database tables using the startup schema sync logic."""
     # First ensure database exists
     create_database_if_not_exists()
-    
-    # Now import database and models
-    from app.database import engine, Base
-    from app.models import (
-        User, Dish, DailyDishQuantity, Order, OrderItem,
-        Review, Tip, Address, Binding, Notification, Favorite,
-        CoupleRelationship, CoupleMemo, CoupleAnniversary,
-        CoupleDatePlan, CoupleRestaurantCategory, CoupleRestaurantItem,
-    )
-    
-    print("使用 SQLAlchemy 创建数据库表...")
-    
-    # Import all models to ensure they are registered with Base
-    models = [
-        User, Dish, DailyDishQuantity, Order, OrderItem,
-        Review, Tip, Address, Binding, Notification, Favorite,
-        CoupleRelationship, CoupleMemo, CoupleAnniversary,
-        CoupleDatePlan, CoupleRestaurantCategory, CoupleRestaurantItem,
-    ]
-    
-    print(f"已注册模型: {[m.__tablename__ for m in models]}")
-    
-    # Create all tables
-    Base.metadata.create_all(bind=engine)
-    ensure_schema_compatibility(engine)
-    
-    print("数据库表创建成功!")
+
+    from app.database import engine
+
+    print("使用启动自检逻辑创建/同步数据库表...")
+    sync_database_schema()
+
+    print("数据库表创建/同步成功!")
     print("\n已创建的表:")
-    for table in Base.metadata.sorted_tables:
-        print(f"  - {table.name}")
+    for table in inspect(engine).get_table_names():
+        print(f"  - {table}")
 
 
 def drop_tables():
@@ -104,9 +91,10 @@ def drop_tables():
     from app.database import engine, Base
     from app.models import (
         User, Dish, DailyDishQuantity, Order, OrderItem,
-        Review, Tip, Address, Binding, Notification, Favorite,
+        Review, Tip, Address, Binding, Notification, Favorite, WalletTransaction,
         CoupleRelationship, CoupleMemo, CoupleAnniversary,
         CoupleDatePlan, CoupleRestaurantCategory, CoupleRestaurantItem,
+        CoupleRestaurantCartItem,
     )
     
     print("删除所有数据库表...")

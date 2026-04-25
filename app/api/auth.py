@@ -25,6 +25,8 @@ from app.schemas.user import (
     BoundChefInfo
 )
 from app.services.wechat_service import code2session, WeChatServiceError
+from app.services.business_status_service import build_chef_business_status
+from app.services.wallet_service import build_wallet_payload
 from app.utils.security import create_token, generate_binding_code
 from app.middleware.auth import get_current_user
 
@@ -52,9 +54,12 @@ def _get_user_info(user: User, db: Session) -> UserInfo:
                     id=chef.id,
                     nickname=chef.nickname,
                     avatar=chef.avatar,
-                    rating=float(chef.rating) if chef.rating else 5.0
+                    introduction=chef.introduction,
+                    specialties=chef.specialties or [],
+                    rating=float(chef.rating) if chef.rating else 5.0,
+                    business_status=build_chef_business_status(chef),
                 )
-    
+
     return UserInfo(
         id=user.id,
         nickname=user.nickname,
@@ -66,7 +71,9 @@ def _get_user_info(user: User, db: Session) -> UserInfo:
         specialties=user.specialties,
         rating=float(user.rating) if user.rating else None,
         total_orders=user.total_orders,
-        bound_chef=bound_chef
+        business_status=build_chef_business_status(user) if user.role == "chef" else None,
+        bound_chef=bound_chef,
+        wallet=build_wallet_payload(user),
     )
 
 

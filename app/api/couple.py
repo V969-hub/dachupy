@@ -21,8 +21,14 @@ from app.schemas.couple import (
     CoupleRestaurantCategoryCreateRequest,
     CoupleRestaurantCategorySortRequest,
     CoupleRestaurantCategoryUpdateRequest,
+    CoupleRestaurantCartItemRequest,
+    CoupleRestaurantCartQuantityRequest,
     CoupleRestaurantItemCreateRequest,
     CoupleRestaurantItemUpdateRequest,
+    CoupleRestaurantWishCreateRequest,
+    CoupleRestaurantWishUpdateRequest,
+    CoupleDateDrawCreateRequest,
+    CoupleDateDrawAcceptRequest,
 )
 from app.services.couple_service import (
     CoupleServiceError,
@@ -64,6 +70,22 @@ from app.services.couple_service import (
     get_restaurant_item_detail,
     restaurant_item_to_dict,
     get_restaurant_dashboard,
+    get_restaurant_recommendation,
+    get_restaurant_cart,
+    add_restaurant_cart_item,
+    set_restaurant_cart_item_quantity,
+    remove_restaurant_cart_item,
+    clear_restaurant_cart,
+    list_restaurant_wishes,
+    create_restaurant_wish,
+    update_restaurant_wish,
+    delete_restaurant_wish,
+    restaurant_wish_to_dict,
+    draw_date_card,
+    list_date_draws,
+    accept_date_draw,
+    update_date_draw_status,
+    date_draw_to_dict,
 )
 
 
@@ -207,6 +229,7 @@ async def update_couple_memo(
         memo = update_memo(
             db,
             relationship,
+            current_user,
             memo_id,
             title=request.title,
             content=request.content,
@@ -231,7 +254,7 @@ async def update_couple_memo_status(
 ):
     try:
         relationship = require_relationship(db, current_user)
-        memo = update_memo_status(db, relationship, memo_id, request.is_completed)
+        memo = update_memo_status(db, relationship, current_user, memo_id, request.is_completed)
         return success_response(data=memo_to_dict(memo), message="状态已更新")
     except CoupleServiceError as e:
         return error_response(e.code, e.message)
@@ -247,7 +270,7 @@ async def remove_couple_memo(
 ):
     try:
         relationship = require_relationship(db, current_user)
-        delete_memo(db, relationship, memo_id)
+        delete_memo(db, relationship, current_user, memo_id)
         return success_response(message="删除成功")
     except CoupleServiceError as e:
         return error_response(e.code, e.message)
@@ -281,6 +304,7 @@ async def create_couple_anniversary(
         anniversary = create_anniversary(
             db,
             relationship,
+            current_user,
             request.title,
             request.date,
             request.type,
@@ -306,6 +330,7 @@ async def update_couple_anniversary(
         anniversary = update_anniversary(
             db,
             relationship,
+            current_user,
             anniversary_id,
             title=request.title,
             target_date=request.date,
@@ -329,7 +354,7 @@ async def remove_couple_anniversary(
 ):
     try:
         relationship = require_relationship(db, current_user)
-        delete_anniversary(db, relationship, anniversary_id)
+        delete_anniversary(db, relationship, current_user, anniversary_id)
         return success_response(message="删除成功")
     except CoupleServiceError as e:
         return error_response(e.code, e.message)
@@ -370,7 +395,8 @@ async def create_couple_date_plan(
             request.location,
             request.note,
             request.anniversary_id,
-            request.order_id
+            request.order_id,
+            [item.model_dump() for item in request.menu_items] if request.menu_items is not None else None,
         )
         return success_response(data=date_plan_to_dict(plan), message="创建成功")
     except CoupleServiceError as e:
@@ -406,6 +432,7 @@ async def update_couple_date_plan(
         plan = update_date_plan(
             db,
             relationship,
+            current_user,
             plan_id,
             title=request.title,
             plan_at=request.plan_at,
@@ -413,10 +440,12 @@ async def update_couple_date_plan(
             note=request.note,
             anniversary_id=request.anniversary_id,
             order_id=request.order_id,
+            menu_items=[item.model_dump() for item in request.menu_items] if request.menu_items is not None else None,
             location_provided="location" in request.model_fields_set,
             note_provided="note" in request.model_fields_set,
             anniversary_id_provided="anniversary_id" in request.model_fields_set,
             order_id_provided="order_id" in request.model_fields_set,
+            menu_items_provided="menu_items" in request.model_fields_set,
         )
         return success_response(data=date_plan_to_dict(plan), message="更新成功")
     except CoupleServiceError as e:
@@ -434,7 +463,7 @@ async def update_couple_date_plan_status(
 ):
     try:
         relationship = require_relationship(db, current_user)
-        plan = update_date_plan_status(db, relationship, plan_id, request.status)
+        plan = update_date_plan_status(db, relationship, current_user, plan_id, request.status)
         return success_response(data=date_plan_to_dict(plan), message="状态已更新")
     except CoupleServiceError as e:
         return error_response(e.code, e.message)
@@ -450,12 +479,95 @@ async def remove_couple_date_plan(
 ):
     try:
         relationship = require_relationship(db, current_user)
-        delete_date_plan(db, relationship, plan_id)
+        delete_date_plan(db, relationship, current_user, plan_id)
         return success_response(message="删除成功")
     except CoupleServiceError as e:
         return error_response(e.code, e.message)
     except Exception as e:
         return error_response(500, f"删除约饭计划失败: {str(e)}")
+
+
+@router.get("/date-draws")
+async def couple_date_draws(
+    status: str = Query("all", description="筛选：all/drawn/accepted/completed/cancelled"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        data = [date_draw_to_dict(item) for item in list_date_draws(db, relationship, status)]
+        return success_response(data=data)
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"获取约会抽卡记录失败: {str(e)}")
+
+
+@router.post("/date-draws/draw")
+async def couple_draw_date_card(
+    request: CoupleDateDrawCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        draw = draw_date_card(
+            db,
+            relationship,
+            current_user,
+            source=request.source,
+            category_id=request.category_id,
+            anniversary_id=request.anniversary_id,
+            seed=request.seed,
+        )
+        return success_response(data=date_draw_to_dict(draw), message="抽到一张约会卡")
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"约会抽卡失败: {str(e)}")
+
+
+@router.post("/date-draws/{draw_id}/accept")
+async def couple_accept_date_draw(
+    draw_id: str,
+    request: CoupleDateDrawAcceptRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        draw = accept_date_draw(
+            db,
+            relationship,
+            current_user,
+            draw_id,
+            title=request.title,
+            plan_at=request.plan_at,
+            location=request.location,
+            note=request.note,
+        )
+        return success_response(data=date_draw_to_dict(draw), message="已生成约会计划")
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"接受约会卡失败: {str(e)}")
+
+
+@router.put("/date-draws/{draw_id}/status")
+async def couple_update_date_draw_status(
+    draw_id: str,
+    status: str = Query(..., description="状态：drawn/accepted/completed/cancelled"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        draw = update_date_draw_status(db, relationship, current_user, draw_id, status)
+        return success_response(data=date_draw_to_dict(draw), message="抽卡状态已更新")
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"更新抽卡状态失败: {str(e)}")
 
 
 @router.get("/restaurant/dashboard")
@@ -473,6 +585,24 @@ async def couple_restaurant_dashboard(
         return error_response(500, f"获取小餐厅数据失败: {str(e)}")
 
 
+@router.get("/restaurant/recommendation")
+async def couple_restaurant_recommendation(
+    seed: str | None = Query(None, description="推荐随机种子"),
+    anniversary_id: str | None = Query(None, description="纪念日ID"),
+    source: str = Query("mixed", description="推荐来源：mixed/restaurant/wishes"),
+    category_id: str | None = Query(None, description="分类ID"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        return success_response(data=get_restaurant_recommendation(db, relationship, seed, anniversary_id, source, category_id))
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"获取今日推荐失败: {str(e)}")
+
+
 @router.get("/restaurant/categories")
 async def couple_restaurant_categories(
     keyword: str | None = Query(None, description="搜索关键词"),
@@ -487,6 +617,165 @@ async def couple_restaurant_categories(
         return error_response(e.code, e.message)
     except Exception as e:
         return error_response(500, f"获取菜单分类失败: {str(e)}")
+
+
+@router.get("/restaurant/cart")
+async def couple_restaurant_cart(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        return success_response(data=get_restaurant_cart(db, relationship))
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"获取共享点单篮失败: {str(e)}")
+
+
+@router.post("/restaurant/cart/items")
+async def add_couple_restaurant_cart_item(
+    request: CoupleRestaurantCartItemRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        data = add_restaurant_cart_item(db, relationship, current_user, request.item_id, request.quantity)
+        return success_response(data=data, message="已加入共享点单篮")
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"加入共享点单篮失败: {str(e)}")
+
+
+@router.put("/restaurant/cart/items/{item_id}")
+async def update_couple_restaurant_cart_item(
+    item_id: str,
+    request: CoupleRestaurantCartQuantityRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        data = set_restaurant_cart_item_quantity(db, relationship, current_user, item_id, request.quantity)
+        return success_response(data=data, message="共享点单篮已更新")
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"更新共享点单篮失败: {str(e)}")
+
+
+@router.delete("/restaurant/cart/items/{item_id}")
+async def remove_couple_restaurant_cart_item(
+    item_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        data = remove_restaurant_cart_item(db, relationship, item_id)
+        return success_response(data=data, message="共享点单篮已移除")
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"移除共享点单篮失败: {str(e)}")
+
+
+@router.delete("/restaurant/cart")
+async def clear_couple_restaurant_cart(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        data = clear_restaurant_cart(db, relationship)
+        return success_response(data=data, message="共享点单篮已清空")
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"清空共享点单篮失败: {str(e)}")
+
+
+@router.get("/restaurant/wishes")
+async def couple_restaurant_wishes(
+    status: str = Query("all", description="筛选：all/active/done/archived"),
+    keyword: str | None = Query(None, description="搜索关键词"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        data = [restaurant_wish_to_dict(item) for item in list_restaurant_wishes(db, relationship, status, keyword)]
+        return success_response(data=data)
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"获取想吃清单失败: {str(e)}")
+
+
+@router.post("/restaurant/wishes")
+async def create_couple_restaurant_wish(
+    request: CoupleRestaurantWishCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        wish = create_restaurant_wish(
+            db,
+            relationship,
+            current_user,
+            request.item_id,
+            request.note,
+            request.priority,
+        )
+        return success_response(data=restaurant_wish_to_dict(wish), message="已加入想吃清单")
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"添加想吃清单失败: {str(e)}")
+
+
+@router.put("/restaurant/wishes/{wish_id}")
+async def update_couple_restaurant_wish(
+    wish_id: str,
+    request: CoupleRestaurantWishUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        wish = update_restaurant_wish(
+            db,
+            relationship,
+            wish_id,
+            note=request.note,
+            priority=request.priority,
+            status=request.status,
+            note_provided="note" in request.model_fields_set,
+        )
+        return success_response(data=restaurant_wish_to_dict(wish), message="想吃清单已更新")
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"更新想吃清单失败: {str(e)}")
+
+
+@router.delete("/restaurant/wishes/{wish_id}")
+async def remove_couple_restaurant_wish(
+    wish_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        delete_restaurant_wish(db, relationship, wish_id)
+        return success_response(message="已移出想吃清单")
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"删除想吃清单失败: {str(e)}")
 
 
 @router.post("/restaurant/categories")
@@ -625,6 +914,7 @@ async def create_couple_restaurant_item(
             request.name,
             request.price,
             request.images,
+            request.tags,
             request.description
         )
         return success_response(data=restaurant_item_to_dict(item), message="菜单创建成功")
@@ -651,9 +941,11 @@ async def update_couple_restaurant_item(
             name=request.name,
             price=request.price,
             images=request.images,
+            tags=request.tags,
             description=request.description,
             description_provided="description" in request.model_fields_set,
             images_provided="images" in request.model_fields_set,
+            tags_provided="tags" in request.model_fields_set,
         )
         return success_response(data=restaurant_item_to_dict(item), message="菜单更新成功")
     except CoupleServiceError as e:

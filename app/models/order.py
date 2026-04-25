@@ -36,6 +36,16 @@ class Order(Base):
     cancel_reason = Column(String(256), nullable=True, comment="取消原因")
     is_reviewed = Column(Boolean, default=False, comment="是否已评价")
     payment_id = Column(String(64), nullable=True, comment="微信支付订单号")
+    payment_method = Column(String(32), default="free", comment="支付方式")
+    wallet_paid_amount = Column(DECIMAL(10, 2), default=0, comment="虚拟币支付金额")
+    refund_status = Column(
+        Enum("none", "partial", "refunded", name="order_refund_status"),
+        default="none",
+        comment="退款状态"
+    )
+    refund_amount = Column(DECIMAL(10, 2), default=0, comment="累计退款金额")
+    refund_reason = Column(String(256), nullable=True, comment="最近一次退款原因")
+    refunded_at = Column(DateTime, nullable=True, comment="最近退款时间")
     is_deleted = Column(Boolean, default=False, comment="是否删除")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
@@ -45,6 +55,12 @@ class Order(Base):
     foodie = relationship("User", foreign_keys=[foodie_id], backref="orders_as_foodie")
     chef = relationship("User", foreign_keys=[chef_id], backref="orders_as_chef")
     items = relationship("OrderItem", backref="order", cascade="all, delete-orphan")
+    refunds = relationship(
+        "OrderRefund",
+        backref="order",
+        cascade="all, delete-orphan",
+        order_by="OrderRefund.created_at.desc()"
+    )
     
     def __repr__(self):
         return f"<Order(id={self.id}, order_no={self.order_no}, status={self.status})>"
@@ -67,3 +83,30 @@ class OrderItem(Base):
     
     def __repr__(self):
         return f"<OrderItem(id={self.id}, dish_name={self.dish_name}, quantity={self.quantity})>"
+
+
+class OrderRefund(Base):
+    """
+    Order refund history table.
+
+    Stores manual/admin refund operations for operational auditing.
+    """
+    __tablename__ = "order_refunds"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    order_id = Column(String(36), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, comment="订单ID")
+    amount = Column(DECIMAL(10, 2), nullable=False, comment="退款金额")
+    status = Column(
+        Enum("refunded", "voided", name="order_refund_record_status"),
+        default="refunded",
+        comment="退款记录状态"
+    )
+    method = Column(String(32), default="manual", comment="退款方式")
+    reason = Column(String(256), nullable=False, comment="退款原因")
+    note = Column(Text, nullable=True, comment="退款备注")
+    operator_name = Column(String(64), nullable=False, comment="操作人")
+    created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
+
+    def __repr__(self):
+        return f"<OrderRefund(id={self.id}, order_id={self.order_id}, amount={self.amount})>"

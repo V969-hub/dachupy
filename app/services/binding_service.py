@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.models.binding import Binding
 from app.models.user import User
 from app.models.notification import Notification
+from app.services.business_status_service import build_chef_business_status
 
 
 class BindingServiceError(Exception):
@@ -228,9 +229,10 @@ def get_binding_info(db: Session, foodie: User) -> Optional[dict]:
             "nickname": chef.nickname,
             "avatar": chef.avatar,
             "introduction": chef.introduction,
-            "specialties": chef.specialties,
+            "specialties": chef.specialties or [],
             "rating": float(chef.rating) if chef.rating else 5.0,
-            "total_orders": chef.total_orders
+            "total_orders": chef.total_orders,
+            "business_status": build_chef_business_status(chef),
         }
     }
 

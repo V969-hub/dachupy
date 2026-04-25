@@ -20,6 +20,15 @@ from app.models.binding import Binding
 from app.models.address import Address
 from app.models.notification import Notification
 from app.models.user import User
+from app.services.business_status_service import get_chef_order_unavailable_reason
+from app.services.wallet_service import (
+    PAYMENT_METHOD_FREE,
+    PAYMENT_METHOD_VIRTUAL_COIN,
+    PAYMENT_METHOD_WECHAT,
+    WalletService,
+    WalletServiceError,
+    resolve_payment_method,
+)
 
 
 class OrderServiceError(Exception):
@@ -133,7 +142,8 @@ class OrderService:
         items: List[dict],
         delivery_time: datetime,
         address_id: str,
-        remarks: Optional[str] = None
+        remarks: Optional[str] = None,
+        payment_method: str = PAYMENT_METHOD_WECHAT,
     ) -> Order:
         """
         创建订单
@@ -169,9 +179,20 @@ class OrderService:
         
         if not binding:
             raise OrderServiceError("请先绑定大厨", code=400)
-        
+
         chef_id = binding.chef_id
-        
+        chef = self.db.query(User).filter(
+            User.id == chef_id,
+            User.is_deleted == False
+        ).first()
+
+        if not chef:
+            raise OrderServiceError("绑定的大厨不存在", code=404)
+
+        unavailable_reason = get_chef_order_unavailable_reason(chef, delivery_time)
+        if unavailable_reason:
+            raise OrderServiceError(unavailable_reason, code=400)
+
         # 验证地址
         address = self.db.query(Address).filter(
             Address.id == address_id,
@@ -221,8 +242,15 @@ class OrderService:
             "detail": address.detail
         }
         
+        resolved_payment_method = resolve_payment_method(payment_method, total_price)
+        if resolved_payment_method == PAYMENT_METHOD_VIRTUAL_COIN:
+            try:
+                WalletService(self.db).ensure_sufficient_balance(foodie, total_price)
+            except WalletServiceError as exc:
+                raise OrderServiceError(exc.message, code=exc.code) from exc
+
         # 创建订单
-        initial_status = "pending" if total_price <= Decimal("0.00") else "unpaid"
+        initial_status = "pending" if resolved_payment_method != PAYMENT_METHOD_WECHAT else "unpaid"
         order = Order(
             order_no=order_no,
             foodie_id=foodie_id,
@@ -231,7 +259,9 @@ class OrderService:
             total_price=total_price,
             delivery_time=delivery_time,
             address_snapshot=address_snapshot,
-            remarks=remarks
+            remarks=remarks,
+            payment_method=resolved_payment_method,
+            wallet_paid_amount=Decimal("0.00"),
         )
         self.db.add(order)
         self.db.flush()  # 获取order.id
@@ -256,6 +286,12 @@ class OrderService:
                 item.get("quantity", 1)
             )
         
+        if resolved_payment_method == PAYMENT_METHOD_VIRTUAL_COIN:
+            try:
+                self._apply_virtual_coin_payment(order, foodie)
+            except WalletServiceError as exc:
+                raise OrderServiceError(exc.message, code=exc.code) from exc
+
         if initial_status == "pending":
             self._create_order_notification(
                 order,
@@ -266,7 +302,7 @@ class OrderService:
 
         self.db.commit()
         self.db.refresh(order)
-        
+
         return order
 
     
@@ -292,6 +328,7 @@ class OrderService:
         
         order.status = "pending"
         order.payment_id = payment_id
+        order.payment_method = PAYMENT_METHOD_WECHAT
         
         # 创建通知给大厨 (Requirements: 6.4)
         self._create_order_notification(
@@ -440,15 +477,10 @@ class OrderService:
         # 更新状态
         order.status = "cancelled"
         order.cancel_reason = reason
+        self._refund_virtual_coin_payment(order, reason or "订单取消")
         
         # 恢复菜品预订数量
-        delivery_date = order.delivery_time.date()
-        for item in order.items:
-            self._update_booked_quantity(
-                item.dish_id,
-                delivery_date,
-                -item.quantity  # 负数表示减少
-            )
+        self._restore_order_inventory(order)
         
         # 创建通知
         if order.foodie_id == user_id:
@@ -536,15 +568,10 @@ class OrderService:
         
         order.status = "cancelled"
         order.cancel_reason = reason
+        self._refund_virtual_coin_payment(order, reason or "订单被拒绝")
         
         # 恢复菜品预订数量
-        delivery_date = order.delivery_time.date()
-        for item in order.items:
-            self._update_booked_quantity(
-                item.dish_id,
-                delivery_date,
-                -item.quantity
-            )
+        self._restore_order_inventory(order)
         
         # 通知吃货
         self._create_order_notification(
@@ -638,6 +665,150 @@ class OrderService:
         Requirements: 7.4
         """
         return self.cooking_done(order_id, chef_id)
+
+    def admin_update_status(
+        self,
+        order_id: str,
+        target_status: str,
+        cancel_reason: Optional[str] = None,
+    ) -> Order:
+        """Update order status from the admin console with side effects kept in sync."""
+        order = self.get_order_by_id(order_id)
+        if not order:
+            raise OrderServiceError("订单不存在", code=404)
+
+        if target_status == order.status:
+            return order
+
+        if target_status == "cancelled":
+            return self.admin_cancel_order(order_id, cancel_reason=cancel_reason)
+
+        if target_status not in {"accepted", "cooking", "delivering", "completed"}:
+            raise OrderServiceError("后台暂不支持直接更新到该状态", code=400)
+
+        if not validate_status_transition(order.status, target_status):
+            raise OrderServiceError(
+                f"当前状态({order.status})不能更新为 {target_status}",
+                code=400
+            )
+
+        if target_status == "accepted":
+            order.status = "accepted"
+            self._create_order_notification(
+                order,
+                "order_status",
+                "订单已接受",
+                f"后台已将订单 {order.order_no} 标记为已接受",
+                notify_foodie=True,
+            )
+        elif target_status == "cooking":
+            order.status = "cooking"
+            self._create_order_notification(
+                order,
+                "order_status",
+                "开始烹饪",
+                f"后台已将订单 {order.order_no} 标记为制作中",
+                notify_foodie=True,
+            )
+        elif target_status == "delivering":
+            order.status = "delivering"
+            self._create_order_notification(
+                order,
+                "order_status",
+                "配送中",
+                f"后台已将订单 {order.order_no} 标记为配送中",
+                notify_foodie=True,
+            )
+        elif target_status == "completed":
+            order.status = "completed"
+            order.completed_at = datetime.now()
+
+            chef = self.db.query(User).filter(User.id == order.chef_id).first()
+            if chef:
+                chef.total_orders = (chef.total_orders or 0) + 1
+
+            self._create_order_notification(
+                order,
+                "order_status",
+                "订单已完成",
+                f"后台已将订单 {order.order_no} 标记为已完成",
+                notify_foodie=True,
+                notify_chef=True,
+            )
+
+        self.db.commit()
+        self.db.refresh(order)
+        return order
+
+    def admin_cancel_order(
+        self,
+        order_id: str,
+        cancel_reason: Optional[str] = None,
+    ) -> Order:
+        """Cancel an order from the admin console and keep stock/refund state consistent."""
+        order = self.get_order_by_id(order_id)
+        if not order:
+            raise OrderServiceError("订单不存在", code=404)
+
+        if order.status == "cancelled":
+            return order
+        if order.status == "completed":
+            raise OrderServiceError("已完成订单不能直接取消，请改用退款流程处理", code=400)
+
+        order.status = "cancelled"
+        order.cancel_reason = cancel_reason or "后台取消"
+        self._refund_virtual_coin_payment(order, order.cancel_reason)
+        self._restore_order_inventory(order)
+        self._create_order_notification(
+            order,
+            "order_status",
+            "订单已取消",
+            f"后台已将订单 {order.order_no} 取消，原因: {order.cancel_reason}",
+            notify_foodie=True,
+            notify_chef=True,
+        )
+
+        self.db.commit()
+        self.db.refresh(order)
+        return order
+
+    def pay_order_with_virtual_coin(self, order_id: str, foodie_id: str) -> Order:
+        """Pay an unpaid order with virtual coins."""
+        order = self.get_order_by_id(order_id)
+        if not order:
+            raise OrderServiceError("订单不存在", code=404)
+
+        if order.foodie_id != foodie_id:
+            raise OrderServiceError("无权操作此订单", code=403)
+
+        if order.status != "unpaid":
+            raise OrderServiceError("当前订单不需要继续支付", code=400)
+
+        foodie = self.db.query(User).filter(
+            User.id == foodie_id,
+            User.is_deleted == False,
+        ).first()
+        if not foodie:
+            raise OrderServiceError("用户不存在", code=404)
+
+        try:
+            self._apply_virtual_coin_payment(order, foodie)
+        except WalletServiceError as exc:
+            raise OrderServiceError(exc.message, code=exc.code) from exc
+
+        order.status = "pending"
+        order.payment_method = PAYMENT_METHOD_VIRTUAL_COIN
+
+        self._create_order_notification(
+            order,
+            "new_order",
+            "新订单",
+            f"您有一个新订单，订单号: {order.order_no}"
+        )
+
+        self.db.commit()
+        self.db.refresh(order)
+        return order
     
     def confirm_receipt(self, order_id: str, foodie_id: str) -> Order:
         """
@@ -749,6 +920,16 @@ class OrderService:
                     booked_quantity=quantity
                 )
                 self.db.add(daily_quantity)
+
+    def _restore_order_inventory(self, order: Order) -> None:
+        """Release reserved dish quantity for a cancelled order."""
+        delivery_date = order.delivery_time.date()
+        for item in order.items:
+            self._update_booked_quantity(
+                item.dish_id,
+                delivery_date,
+                -item.quantity
+            )
     
     def _create_order_notification(
         self,
@@ -779,7 +960,7 @@ class OrderService:
                 data=data
             )
             self.db.add(notification)
-        
+
         if notify_chef:
             notification = Notification(
                 user_id=order.chef_id,
@@ -789,7 +970,7 @@ class OrderService:
                 data=data
             )
             self.db.add(notification)
-        
+
         # 如果都没指定，默认通知大厨（新订单场景）
         if not notify_foodie and not notify_chef:
             notification = Notification(
@@ -800,6 +981,54 @@ class OrderService:
                 data=data
             )
             self.db.add(notification)
+
+    def _apply_virtual_coin_payment(self, order: Order, foodie: User) -> None:
+        """Deduct virtual coins for the order and mark it as paid."""
+        if order.total_price <= Decimal("0.00"):
+            return
+
+        wallet_service = WalletService(self.db)
+        wallet_service.deduct_balance(
+            user=foodie,
+            amount=order.total_price,
+            transaction_type="order_payment",
+            note=f"订单 {order.order_no} 使用虚拟币支付",
+            related_order_id=order.id,
+        )
+        order.payment_method = PAYMENT_METHOD_VIRTUAL_COIN
+        order.wallet_paid_amount = order.total_price
+        order.payment_id = f"vcoin_{uuid.uuid4().hex[:18]}"
+
+    def _refund_virtual_coin_payment(self, order: Order, reason: str) -> None:
+        """Refund virtual coin payment when a paid order is cancelled."""
+        paid_amount = Decimal(str(order.wallet_paid_amount or 0))
+        if order.payment_method != PAYMENT_METHOD_VIRTUAL_COIN or paid_amount <= Decimal("0.00"):
+            return
+
+        refunded_amount = Decimal(str(order.refund_amount or 0))
+        remaining_amount = paid_amount - refunded_amount
+        if remaining_amount <= Decimal("0.00"):
+            return
+
+        foodie = self.db.query(User).filter(
+            User.id == order.foodie_id,
+            User.is_deleted == False,
+        ).first()
+        if not foodie:
+            return
+
+        wallet_service = WalletService(self.db)
+        wallet_service.add_balance(
+            user=foodie,
+            amount=remaining_amount,
+            transaction_type="order_refund",
+            note=f"订单 {order.order_no} 退回虚拟币：{reason}",
+            related_order_id=order.id,
+        )
+        order.refund_status = "refunded"
+        order.refund_amount = paid_amount
+        order.refund_reason = reason
+        order.refunded_at = datetime.now()
     
     def _build_order_response(self, order: Order) -> dict:
         """
@@ -831,6 +1060,9 @@ class OrderService:
             "order_no": order.order_no,
             "status": order.status,
             "total_price": float(order.total_price),
+            "payment_method": order.payment_method,
+            "wallet_paid_amount": float(order.wallet_paid_amount or 0),
+            "refund_amount": float(order.refund_amount or 0),
             "delivery_time": order.delivery_time.isoformat() if order.delivery_time else None,
             "address": order.address_snapshot,
             "remarks": order.remarks,
@@ -871,6 +1103,7 @@ class OrderService:
             "order_no": order.order_no,
             "status": order.status,
             "total_price": float(order.total_price),
+            "payment_method": order.payment_method,
             "delivery_time": order.delivery_time.isoformat() if order.delivery_time else None,
             "cover_image": cover_image,
             "item_count": len(order.items),

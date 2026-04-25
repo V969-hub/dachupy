@@ -42,8 +42,13 @@ CREATE TABLE IF NOT EXISTS users (
     role ENUM('foodie', 'chef') NOT NULL DEFAULT 'foodie' COMMENT '角色',
     binding_code VARCHAR(8) UNIQUE NOT NULL COMMENT '专属绑定码',
     couple_code VARCHAR(8) UNIQUE DEFAULT NULL COMMENT '情侣邀请码',
+    is_open TINYINT(1) DEFAULT 1 COMMENT '是否营业中',
+    service_start_time VARCHAR(5) DEFAULT '09:00' COMMENT '接单开始时间',
+    service_end_time VARCHAR(5) DEFAULT '21:00' COMMENT '接单结束时间',
+    rest_notice VARCHAR(255) DEFAULT NULL COMMENT '休息说明',
     introduction TEXT COMMENT '大厨简介',
     specialties JSON COMMENT '大厨擅长菜系',
+    virtual_coin_balance DECIMAL(10,2) NOT NULL DEFAULT 200.00 COMMENT '虚拟币余额',
     rating DECIMAL(2,1) DEFAULT 5.0 COMMENT '大厨评分',
     total_orders INT DEFAULT 0 COMMENT '总订单数',
     is_deleted TINYINT(1) DEFAULT 0 COMMENT '是否删除',
@@ -104,6 +109,8 @@ CREATE TABLE IF NOT EXISTS orders (
     cancel_reason VARCHAR(256) COMMENT '取消原因',
     is_reviewed TINYINT(1) DEFAULT 0 COMMENT '是否已评价',
     payment_id VARCHAR(64) COMMENT '微信支付订单号',
+    payment_method VARCHAR(32) NOT NULL DEFAULT 'free' COMMENT '支付方式',
+    wallet_paid_amount DECIMAL(10,2) DEFAULT 0 COMMENT '虚拟币支付金额',
     is_deleted TINYINT(1) DEFAULT 0 COMMENT '是否删除',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -129,6 +136,21 @@ CREATE TABLE IF NOT EXISTS order_items (
     FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
     INDEX idx_order_id (order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='订单项表';
+
+-- Wallet transactions table
+CREATE TABLE IF NOT EXISTS wallet_transactions (
+    id VARCHAR(36) PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL COMMENT '用户ID',
+    transaction_type VARCHAR(32) NOT NULL COMMENT '流水类型',
+    change_amount DECIMAL(10,2) NOT NULL COMMENT '变动金额',
+    balance_after DECIMAL(10,2) NOT NULL COMMENT '变动后余额',
+    related_order_id VARCHAR(36) DEFAULT NULL COMMENT '关联订单ID',
+    note VARCHAR(255) DEFAULT NULL COMMENT '备注',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    INDEX idx_wallet_transactions_user_id (user_id),
+    INDEX idx_wallet_transactions_order_id (related_order_id),
+    INDEX idx_wallet_transactions_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='虚拟币流水表';
 
 -- Reviews table
 CREATE TABLE IF NOT EXISTS reviews (
@@ -290,6 +312,8 @@ CREATE TABLE IF NOT EXISTS couple_date_plans (
     note TEXT DEFAULT NULL COMMENT '备注',
     anniversary_id VARCHAR(36) DEFAULT NULL COMMENT '关联纪念日',
     order_id VARCHAR(36) DEFAULT NULL COMMENT '关联订单',
+    menu_items JSON DEFAULT NULL COMMENT '约饭菜单快照',
+    menu_total DECIMAL(10,2) NOT NULL DEFAULT 0 COMMENT '约饭菜单总额',
     status ENUM('planned', 'completed', 'cancelled') NOT NULL DEFAULT 'planned' COMMENT '计划状态',
     created_by VARCHAR(36) NOT NULL COMMENT '创建人',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -326,6 +350,7 @@ CREATE TABLE IF NOT EXISTS couple_restaurant_items (
     name VARCHAR(100) NOT NULL COMMENT '菜名',
     price DECIMAL(10,2) NOT NULL COMMENT '价格',
     images JSON NOT NULL COMMENT '图片列表',
+    tags JSON DEFAULT NULL COMMENT '偏好标签',
     description TEXT DEFAULT NULL COMMENT '描述',
     created_by VARCHAR(36) NOT NULL COMMENT '创建人',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -336,6 +361,20 @@ CREATE TABLE IF NOT EXISTS couple_restaurant_items (
     INDEX idx_couple_restaurant_items_relationship (relationship_id),
     INDEX idx_couple_restaurant_items_category (category_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='情侣小餐厅菜单表';
+
+-- Couple restaurant shared cart table
+CREATE TABLE IF NOT EXISTS couple_restaurant_cart_items (
+    id VARCHAR(36) PRIMARY KEY,
+    relationship_id VARCHAR(36) NOT NULL COMMENT '情侣关系ID',
+    item_id VARCHAR(36) NOT NULL COMMENT '菜单ID',
+    quantity INT NOT NULL DEFAULT 1 COMMENT '数量',
+    created_by VARCHAR(36) NOT NULL COMMENT '创建人',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_couple_restaurant_cart_relationship_item (relationship_id, item_id),
+    INDEX idx_couple_restaurant_cart_relationship (relationship_id),
+    INDEX idx_couple_restaurant_cart_item (item_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='情侣小餐厅共享点单篮表';
 
 -- ============================================================================
 -- Initialization Complete

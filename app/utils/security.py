@@ -7,7 +7,7 @@ Requirements:
 - 3.4: Generate unique binding code for each user
 """
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Any
 import secrets
 import string
 
@@ -20,7 +20,12 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def create_token(user_id: str, role: str, expires_delta: Optional[timedelta] = None) -> str:
+def create_token(
+    user_id: str,
+    role: str,
+    expires_delta: Optional[timedelta] = None,
+    extra_claims: Optional[dict[str, Any]] = None
+) -> str:
     """
     Create a JWT token for user authentication.
     
@@ -39,12 +44,14 @@ def create_token(user_id: str, role: str, expires_delta: Optional[timedelta] = N
     else:
         expire = _utc_now() + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
     
-    to_encode = {
+    to_encode: dict[str, Any] = {
         "sub": user_id,
         "role": role,
         "exp": expire,
         "iat": _utc_now()
     }
+    if extra_claims:
+        to_encode.update(extra_claims)
     
     encoded_jwt = jwt.encode(
         to_encode, 
@@ -52,6 +59,24 @@ def create_token(user_id: str, role: str, expires_delta: Optional[timedelta] = N
         algorithm=settings.JWT_ALGORITHM
     )
     return encoded_jwt
+
+
+def create_admin_token(username: str, expires_delta: Optional[timedelta] = None) -> str:
+    """
+    Create a dedicated JWT token for the admin console.
+
+    The admin token uses a dedicated claim so it can be validated separately
+    from mini-program user tokens.
+    """
+    return create_token(
+        user_id=f"admin:{username}",
+        role="admin",
+        expires_delta=expires_delta,
+        extra_claims={
+            "kind": "admin",
+            "username": username
+        }
+    )
 
 
 def verify_token(token: str) -> Optional[dict]:
@@ -78,6 +103,20 @@ def verify_token(token: str) -> Optional[dict]:
         return payload
     except JWTError:
         return None
+
+
+def verify_admin_token(token: str) -> Optional[dict]:
+    """
+    Verify that a token is a valid admin-console token.
+    """
+    payload = verify_token(token)
+    if payload is None:
+        return None
+    if payload.get("role") != "admin" or payload.get("kind") != "admin":
+        return None
+    if not payload.get("username"):
+        return None
+    return payload
 
 
 def generate_binding_code(length: int = 8) -> str:

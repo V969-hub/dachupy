@@ -8,6 +8,8 @@ Requirements:
 from typing import Optional, List
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.wallet import WalletInfo
+
 
 # ============ Authentication Schemas ============
 
@@ -65,9 +67,22 @@ class BoundChefInfo(BaseModel):
     id: str
     nickname: str
     avatar: str
+    introduction: Optional[str] = None
+    specialties: Optional[List[str]] = None
     rating: float
+    business_status: Optional["BusinessStatus"] = None
     
     model_config = ConfigDict(from_attributes=True)
+
+
+class BusinessStatus(BaseModel):
+    """Chef business status payload."""
+    is_open: bool = True
+    service_start_time: str
+    service_end_time: str
+    rest_notice: Optional[str] = None
+    accepting_orders: bool = True
+    status_text: str
 
 
 class UserInfo(BaseModel):
@@ -82,7 +97,9 @@ class UserInfo(BaseModel):
     specialties: Optional[List[str]] = None
     rating: Optional[float] = None
     total_orders: Optional[int] = None
+    business_status: Optional[BusinessStatus] = None
     bound_chef: Optional[BoundChefInfo] = None
+    wallet: Optional[WalletInfo] = None
     
     model_config = ConfigDict(from_attributes=True)
 
@@ -99,6 +116,11 @@ class UserProfileUpdate(BaseModel):
     """Request schema for updating user profile."""
     nickname: Optional[str] = Field(None, max_length=64, description="昵称")
     avatar: Optional[str] = Field(None, max_length=512, description="头像URL")
+    phone: Optional[str] = Field(None, max_length=20, description="手机号")
+    is_open: Optional[bool] = Field(None, description="是否营业中")
+    service_start_time: Optional[str] = Field(None, description="接单开始时间 HH:MM")
+    service_end_time: Optional[str] = Field(None, description="接单结束时间 HH:MM")
+    rest_notice: Optional[str] = Field(None, max_length=255, description="休息说明")
     introduction: Optional[str] = Field(None, description="大厨简介")
     specialties: Optional[List[str]] = Field(None, description="擅长菜系")
     
@@ -107,8 +129,16 @@ class UserProfileUpdate(BaseModel):
             "example": {
                 "nickname": "张大厨",
                 "avatar": "https://example.com/avatar.jpg",
+                "phone": "13800138000",
+                "is_open": True,
+                "service_start_time": "09:00",
+                "service_end_time": "21:00",
+                "rest_notice": "今天家里有事，暂停接单",
                 "introduction": "专注川菜20年",
                 "specialties": ["川菜", "粤菜"]
             }
         }
     )
+
+
+BoundChefInfo.model_rebuild()

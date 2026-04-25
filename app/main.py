@@ -28,7 +28,11 @@ from app.api.earnings import router as earnings_router
 from app.api.favorite import router as favorite_router
 from app.api.upload import router as upload_router
 from app.api.couple import router as couple_router
+from app.api.wallet import router as wallet_router
+from app.api.admin import router as admin_router
+from app.schema_sync import sync_database_schema
 from app.services.couple_service import sync_all_due_notifications
+import app.models  # noqa: F401
 
 # 配置日志
 logging.basicConfig(
@@ -46,6 +50,51 @@ def should_start_background_jobs() -> bool:
     if "pytest" in sys.modules:
         return False
     return True
+
+
+def should_sync_database_schema() -> bool:
+    if not settings.DATABASE_SCHEMA_SYNC_ENABLED:
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    if "pytest" in sys.modules:
+        return False
+    return True
+
+
+def should_validate_runtime_configuration() -> bool:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    if "pytest" in sys.modules:
+        return False
+    return True
+
+
+def validate_runtime_configuration() -> None:
+    insecure_items: list[str] = []
+
+    if settings.JWT_SECRET_KEY == "your-super-secret-key-change-in-production":
+        insecure_items.append("JWT_SECRET_KEY 使用默认值")
+
+    admin_password = (settings.ADMIN_PASSWORD or "").strip()
+    if not admin_password:
+        insecure_items.append("ADMIN_PASSWORD 未设置")
+    elif admin_password == "ChangeMe123!":
+        insecure_items.append("ADMIN_PASSWORD 使用默认值")
+
+    if not insecure_items:
+        return
+
+    app_env = (settings.APP_ENV or "development").strip().lower() or "development"
+    message = "启动配置校验发现高风险默认配置: " + "，".join(insecure_items)
+
+    if app_env in {"production", "staging"} and not settings.ALLOW_INSECURE_STARTUP:
+        raise RuntimeError(
+            message + "。请先在环境变量中更新配置后再启动，"
+            "如需临时放行请显式设置 ALLOW_INSECURE_STARTUP=true。"
+        )
+
+    logger.warning("%s。当前 APP_ENV=%s，将继续启动。", message, app_env)
 
 
 async def couple_notification_sync_worker() -> None:
@@ -116,12 +165,20 @@ tags_metadata = [
         "description": "菜品收藏管理接口"
     },
     {
+        "name": "钱包",
+        "description": "虚拟币钱包、充值和流水接口"
+    },
+    {
         "name": "情侣",
         "description": "情侣备忘录、纪念日与绑定关系接口"
     },
     {
         "name": "Upload",
         "description": "文件上传接口"
+    },
+    {
+        "name": "后台管理",
+        "description": "后台管理控制台接口"
     }
 ]
 
@@ -131,6 +188,13 @@ async def lifespan(app: FastAPI):
     logger.info("私厨预订小程序后端API服务启动")
     logger.info("API文档地址: /docs")
     logger.info("ReDoc文档地址: /redoc")
+
+    if should_validate_runtime_configuration():
+        validate_runtime_configuration()
+
+    if should_sync_database_schema():
+        sync_database_schema()
+        logger.info("数据库结构自检完成")
 
     if should_start_background_jobs():
         background_task = asyncio.create_task(couple_notification_sync_worker())
@@ -329,5 +393,7 @@ app.include_router(address_router, prefix="/api")
 app.include_router(notification_router, prefix="/api")
 app.include_router(earnings_router, prefix="/api")
 app.include_router(favorite_router, prefix="/api")
+app.include_router(wallet_router, prefix="/api")
 app.include_router(upload_router, prefix="/api")
 app.include_router(couple_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")

@@ -2,6 +2,8 @@
 User model for the private chef booking system.
 Handles both foodie (customer) and chef roles.
 """
+from decimal import Decimal
+
 from sqlalchemy import Column, String, Enum, Text, JSON, DECIMAL, Integer, Boolean, DateTime
 from sqlalchemy.sql import func
 from app.database import Base
@@ -27,8 +29,13 @@ class User(Base):
     role = Column(Enum("foodie", "chef", name="user_role"), default="foodie", comment="角色")
     binding_code = Column(String(8), unique=True, nullable=False, comment="专属绑定码")
     couple_code = Column(String(8), unique=True, nullable=True, comment="情侣邀请码")
+    is_open = Column(Boolean, default=True, comment="是否营业中")
+    service_start_time = Column(String(5), default="09:00", comment="接单开始时间")
+    service_end_time = Column(String(5), default="21:00", comment="接单结束时间")
+    rest_notice = Column(String(255), nullable=True, comment="休息说明")
     introduction = Column(Text, nullable=True, comment="大厨简介")
     specialties = Column(JSON, nullable=True, comment="大厨擅长菜系")
+    virtual_coin_balance = Column(DECIMAL(10, 2), default=Decimal("200.00"), comment="虚拟币余额")
     rating = Column(DECIMAL(2, 1), default=5.0, comment="大厨评分")
     total_orders = Column(Integer, default=0, comment="总订单数")
     is_deleted = Column(Boolean, default=False, comment="是否删除")

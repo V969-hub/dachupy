@@ -31,6 +31,7 @@ class Notification(Base):
             "couple_anniversary",
             "couple_bind",
             "couple_date_plan",
+            "couple_date_draw",
             name="notification_type"
         ),
         nullable=False,

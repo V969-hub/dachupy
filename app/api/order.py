@@ -8,20 +8,27 @@ Requirements:
 - 7.1-7.6: 订单状态管理接口
 """
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.middleware.auth import get_current_user, require_chef, require_foodie
 from app.models.user import User
 from app.services.order_service import OrderService, OrderServiceError
+from app.services.payment_service import PaymentService, PaymentServiceError
 from app.schemas.order import (
     OrderCreate,
     OrderCancel,
     OrderReject,
-    OrderCreateResponse
+    OrderCreateResponse,
+    OrderPayRequest,
 )
 from app.schemas.common import success_response, error_response, paginated_response
+from app.services.wallet_service import (
+    PAYMENT_METHOD_VIRTUAL_COIN,
+    PAYMENT_METHOD_WECHAT,
+    build_wallet_payload,
+)
 
 
 router = APIRouter(tags=["订单"])
@@ -31,6 +38,7 @@ router = APIRouter(tags=["订单"])
 
 @router.post("/orders")
 async def create_order(
+    http_request: Request,
     request: OrderCreate,
     current_user: User = Depends(require_foodie),
     db: Session = Depends(get_db)
@@ -56,15 +64,36 @@ async def create_order(
             items=items,
             delivery_time=request.delivery_time,
             address_id=request.address_id,
-            remarks=request.remarks
+            remarks=request.remarks,
+            payment_method=request.payment_method,
         )
-        
+
+        payment_params = None
+        if float(order.total_price) > 0 and order.status == "unpaid" and order.payment_method == PAYMENT_METHOD_WECHAT:
+            if not current_user.open_id:
+                return error_response(400, "当前账号缺少微信 open_id，无法发起支付")
+
+            payment_service = PaymentService(db)
+            base_url = str(http_request.base_url).rstrip("/")
+            notify_url = f"{base_url}/api/payment/notify"
+            client_ip = http_request.client.host if http_request.client else "127.0.0.1"
+            payment_result = await payment_service.create_order_payment(
+                order_id=order.id,
+                openid=current_user.open_id,
+                notify_url=notify_url,
+                client_ip=client_ip
+            )
+            payment_params = payment_result.get("payment_params")
+
         # 构建响应数据
         response_data = {
             "order_id": order.id,
             "order_no": order.order_no,
             "total_price": float(order.total_price),
-            "payment_params": None  # 实际支付参数由支付服务生成
+            "order_status": order.status,
+            "payment_method": order.payment_method,
+            "wallet_balance": build_wallet_payload(current_user)["balance"],
+            "payment_params": payment_params
         }
         
         return success_response(data=response_data, message="订单创建成功")
@@ -78,6 +107,97 @@ async def create_order(
         elif e.code == 403:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
+                detail=e.message
+            )
+        return error_response(e.code, e.message)
+    except PaymentServiceError as e:
+        if e.code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=e.message
+            )
+        return error_response(e.code, e.message)
+
+
+@router.post("/orders/{order_id}/pay")
+async def pay_order(
+    order_id: str,
+    http_request: Request,
+    request: Optional[OrderPayRequest] = Body(default=None),
+    current_user: User = Depends(require_foodie),
+    db: Session = Depends(get_db)
+):
+    """
+    为未支付订单重新获取支付参数（吃货端）。
+    """
+    order_service = OrderService(db)
+
+    order = order_service.get_order_by_id(order_id)
+    if not order or order.foodie_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="订单不存在或无权查看"
+        )
+
+    if order.status != "unpaid":
+        return error_response(400, "当前订单不需要继续支付")
+
+    payment_method = (request.payment_method if request else PAYMENT_METHOD_WECHAT).strip().lower()
+
+    if payment_method == PAYMENT_METHOD_VIRTUAL_COIN:
+        try:
+            updated_order = order_service.pay_order_with_virtual_coin(order_id=order.id, foodie_id=current_user.id)
+            return success_response(
+                data={
+                    "order_id": updated_order.id,
+                    "order_no": updated_order.order_no,
+                    "total_price": float(updated_order.total_price),
+                    "order_status": updated_order.status,
+                    "payment_method": updated_order.payment_method,
+                    "wallet_balance": build_wallet_payload(current_user)["balance"],
+                    "payment_params": None,
+                },
+                message="虚拟币支付成功"
+            )
+        except OrderServiceError as e:
+            if e.code == 404:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=e.message
+                )
+            return error_response(e.code, e.message)
+
+    if not current_user.open_id:
+        return error_response(400, "当前账号缺少微信 open_id，无法发起支付")
+
+    payment_service = PaymentService(db)
+    base_url = str(http_request.base_url).rstrip("/")
+    notify_url = f"{base_url}/api/payment/notify"
+    client_ip = http_request.client.host if http_request.client else "127.0.0.1"
+
+    try:
+        payment_result = await payment_service.create_order_payment(
+            order_id=order.id,
+            openid=current_user.open_id,
+            notify_url=notify_url,
+            client_ip=client_ip
+        )
+        return success_response(
+            data={
+                "order_id": order.id,
+                "order_no": order.order_no,
+                "total_price": float(order.total_price),
+                "order_status": order.status,
+                "payment_method": order.payment_method,
+                "wallet_balance": build_wallet_payload(current_user)["balance"],
+                "payment_params": payment_result.get("payment_params")
+            },
+            message="支付参数获取成功"
+        )
+    except PaymentServiceError as e:
+        if e.code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail=e.message
             )
         return error_response(e.code, e.message)
@@ -177,9 +297,13 @@ async def cancel_order(
             user_id=current_user.id,
             reason=request.reason
         )
-        
+
+        response_data = {"order_id": order.id, "status": order.status}
+        if current_user.id == order.foodie_id:
+            response_data["wallet_balance"] = build_wallet_payload(current_user)["balance"]
+
         return success_response(
-            data={"order_id": order.id, "status": order.status},
+            data=response_data,
             message="订单已取消"
         )
         

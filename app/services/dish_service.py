@@ -17,6 +17,7 @@ from app.models.dish import Dish, DailyDishQuantity
 from app.models.binding import Binding
 from app.models.favorite import Favorite
 from app.models.user import User
+from app.services.business_status_service import build_chef_business_status
 
 
 class DishService:
@@ -354,7 +355,8 @@ class DishService:
                 "avatar": dish.chef.avatar,
                 "rating": float(dish.chef.rating) if dish.chef.rating else 5.0,
                 "introduction": dish.chef.introduction,
-                "specialties": dish.chef.specialties or []
+                "specialties": dish.chef.specialties or [],
+                "business_status": build_chef_business_status(dish.chef),
             }
         
         return result

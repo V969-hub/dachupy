@@ -25,6 +25,7 @@ VALID_NOTIFICATION_TYPES = [
     "couple_anniversary",
     "couple_bind",
     "couple_date_plan",
+    "couple_date_draw",
 ]
 
 

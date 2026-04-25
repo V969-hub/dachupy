@@ -23,6 +23,7 @@ class OrderCreate(BaseModel):
     delivery_time: datetime = Field(..., description="配送时间")
     address_id: str = Field(..., description="地址ID")
     remarks: Optional[str] = Field(None, max_length=500, description="备注")
+    payment_method: str = Field(default="wechat", description="支付方式：wechat / virtual_coin")
     
     @field_validator('delivery_time')
     @classmethod
@@ -30,6 +31,28 @@ class OrderCreate(BaseModel):
         if v < datetime.now():
             raise ValueError("配送时间不能早于当前时间")
         return v
+
+    @field_validator("payment_method")
+    @classmethod
+    def validate_payment_method(cls, v: str):
+        normalized = (v or "wechat").strip().lower()
+        if normalized not in {"wechat", "virtual_coin"}:
+            raise ValueError("支付方式仅支持 wechat 或 virtual_coin")
+        return normalized
+
+
+class OrderPayRequest(BaseModel):
+    """订单继续支付请求。"""
+
+    payment_method: str = Field(default="wechat", description="支付方式：wechat / virtual_coin")
+
+    @field_validator("payment_method")
+    @classmethod
+    def validate_payment_method(cls, v: str):
+        normalized = (v or "wechat").strip().lower()
+        if normalized not in {"wechat", "virtual_coin"}:
+            raise ValueError("支付方式仅支持 wechat 或 virtual_coin")
+        return normalized
 
 
 class OrderCancel(BaseModel):
@@ -94,6 +117,9 @@ class OrderResponse(BaseModel):
     remarks: Optional[str] = None
     cancel_reason: Optional[str] = None
     is_reviewed: bool = False
+    payment_method: Optional[str] = None
+    wallet_paid_amount: float = 0
+    refund_amount: float = 0
     created_at: Optional[str] = None
     completed_at: Optional[str] = None
     items: List[OrderItemResponse] = []
@@ -113,6 +139,7 @@ class OrderListItem(BaseModel):
     cover_image: Optional[str] = None
     item_count: int = 0
     is_reviewed: bool = False
+    payment_method: Optional[str] = None
     created_at: Optional[str] = None
     chef: Optional[UserBrief] = None
     
@@ -124,6 +151,9 @@ class OrderCreateResponse(BaseModel):
     order_id: str
     order_no: str
     total_price: float
+    order_status: str
+    payment_method: str
+    wallet_balance: Optional[float] = None
     payment_params: Optional[dict] = None  # 微信支付参数
 
 

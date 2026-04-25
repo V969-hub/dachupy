@@ -6,11 +6,24 @@ Requirements:
 - 3.2: Validate and save profile changes
 - 3.3: Allow chef to update introduction and specialties
 """
+import re
 from typing import Optional, List
 from sqlalchemy.orm import Session
 
 from app.models.user import User
 from app.models.binding import Binding
+from app.services.business_status_service import (
+    DEFAULT_SERVICE_END_TIME,
+    DEFAULT_SERVICE_START_TIME,
+    TIME_PATTERN,
+    build_chef_business_status,
+    get_chef_service_window,
+    normalize_service_time,
+    service_time_to_minutes,
+)
+from app.services.wallet_service import build_wallet_payload
+
+PHONE_PATTERN = re.compile(r"^1[3-9]\d{9}$")
 
 
 class UserServiceError(Exception):
@@ -71,6 +84,11 @@ def update_user_profile(
     user: User,
     nickname: Optional[str] = None,
     avatar: Optional[str] = None,
+    phone: Optional[str] = None,
+    is_open: Optional[bool] = None,
+    service_start_time: Optional[str] = None,
+    service_end_time: Optional[str] = None,
+    rest_notice: Optional[str] = None,
     introduction: Optional[str] = None,
     specialties: Optional[List[str]] = None
 ) -> User:
@@ -103,7 +121,60 @@ def update_user_profile(
         if len(avatar) > 512:
             raise UserServiceError("头像URL长度不能超过512个字符")
         user.avatar = avatar
-    
+
+    if phone is not None:
+        normalized_phone = phone.strip()
+        if not normalized_phone:
+            user.phone = None
+        else:
+            if len(normalized_phone) > 20:
+                raise UserServiceError("手机号长度不能超过20个字符")
+            if not PHONE_PATTERN.match(normalized_phone):
+                raise UserServiceError("手机号格式不正确")
+            user.phone = normalized_phone
+
+    if any(value is not None for value in (is_open, service_start_time, service_end_time, rest_notice)):
+        if user.role != "chef":
+            raise UserServiceError("只有大厨可以设置营业状态", code=403)
+
+    if is_open is not None:
+        user.is_open = bool(is_open)
+
+    next_start_time, next_end_time = get_chef_service_window(user)
+
+    if service_start_time is not None:
+        normalized_start_time = normalize_service_time(service_start_time, "")
+        if not normalized_start_time or not TIME_PATTERN.fullmatch(normalized_start_time):
+            raise UserServiceError("接单开始时间格式不正确，请使用 HH:MM")
+        next_start_time = normalized_start_time
+
+    if service_end_time is not None:
+        normalized_end_time = normalize_service_time(service_end_time, "")
+        if not normalized_end_time or not TIME_PATTERN.fullmatch(normalized_end_time):
+            raise UserServiceError("接单结束时间格式不正确，请使用 HH:MM")
+        next_end_time = normalized_end_time
+
+    if service_start_time is not None or service_end_time is not None:
+        if service_time_to_minutes(next_start_time) >= service_time_to_minutes(next_end_time):
+            raise UserServiceError("接单结束时间需晚于开始时间")
+        user.service_start_time = next_start_time
+        user.service_end_time = next_end_time
+    else:
+        user.service_start_time = normalize_service_time(
+            getattr(user, "service_start_time", None),
+            DEFAULT_SERVICE_START_TIME,
+        )
+        user.service_end_time = normalize_service_time(
+            getattr(user, "service_end_time", None),
+            DEFAULT_SERVICE_END_TIME,
+        )
+
+    if rest_notice is not None:
+        normalized_rest_notice = rest_notice.strip()
+        if len(normalized_rest_notice) > 255:
+            raise UserServiceError("休息说明长度不能超过255个字符")
+        user.rest_notice = normalized_rest_notice or None
+
     # 大厨专属字段（仅大厨可以更新）
     if introduction is not None:
         if user.role != "chef":
@@ -148,6 +219,8 @@ def get_user_profile_data(db: Session, user: User) -> dict:
         "phone": user.phone,
         "role": user.role,
         "binding_code": user.binding_code,
+        "wallet": build_wallet_payload(user),
+        "business_status": build_chef_business_status(user) if user.role == "chef" else None,
         "introduction": user.introduction,
         "specialties": user.specialties,
         "rating": float(user.rating) if user.rating else 5.0,
@@ -163,7 +236,10 @@ def get_user_profile_data(db: Session, user: User) -> dict:
                 "id": bound_chef.id,
                 "nickname": bound_chef.nickname,
                 "avatar": bound_chef.avatar,
-                "rating": float(bound_chef.rating) if bound_chef.rating else 5.0
+                "introduction": bound_chef.introduction,
+                "specialties": bound_chef.specialties or [],
+                "rating": float(bound_chef.rating) if bound_chef.rating else 5.0,
+                "business_status": build_chef_business_status(bound_chef),
             }
-    
+
     return profile_data

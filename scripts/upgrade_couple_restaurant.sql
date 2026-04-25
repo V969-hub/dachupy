@@ -126,6 +126,8 @@ CREATE TABLE IF NOT EXISTS couple_date_plans (
     note TEXT DEFAULT NULL COMMENT '备注',
     anniversary_id VARCHAR(36) DEFAULT NULL COMMENT '关联纪念日',
     order_id VARCHAR(36) DEFAULT NULL COMMENT '关联订单',
+    menu_items JSON DEFAULT NULL COMMENT '约饭菜单快照',
+    menu_total DECIMAL(10,2) NOT NULL DEFAULT 0 COMMENT '约饭菜单总额',
     status ENUM('planned', 'completed', 'cancelled') NOT NULL DEFAULT 'planned' COMMENT '计划状态',
     created_by VARCHAR(36) NOT NULL COMMENT '创建人',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -160,6 +162,7 @@ CREATE TABLE IF NOT EXISTS couple_restaurant_items (
     name VARCHAR(100) NOT NULL COMMENT '菜名',
     price DECIMAL(10,2) NOT NULL COMMENT '价格',
     images JSON NOT NULL COMMENT '图片列表',
+    tags JSON DEFAULT NULL COMMENT '偏好标签',
     description TEXT DEFAULT NULL COMMENT '描述',
     created_by VARCHAR(36) NOT NULL COMMENT '创建人',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -170,3 +173,16 @@ CREATE TABLE IF NOT EXISTS couple_restaurant_items (
     INDEX idx_couple_restaurant_items_relationship (relationship_id),
     INDEX idx_couple_restaurant_items_category (category_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='情侣小餐厅菜单表';
+
+CREATE TABLE IF NOT EXISTS couple_restaurant_cart_items (
+    id VARCHAR(36) PRIMARY KEY,
+    relationship_id VARCHAR(36) NOT NULL COMMENT '情侣关系ID',
+    item_id VARCHAR(36) NOT NULL COMMENT '菜单ID',
+    quantity INT NOT NULL DEFAULT 1 COMMENT '数量',
+    created_by VARCHAR(36) NOT NULL COMMENT '创建人',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_couple_restaurant_cart_relationship_item (relationship_id, item_id),
+    INDEX idx_couple_restaurant_cart_relationship (relationship_id),
+    INDEX idx_couple_restaurant_cart_item (item_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='情侣小餐厅共享点单篮表';

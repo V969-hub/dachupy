@@ -2,6 +2,7 @@
 Service layer for the couple memo MVP.
 """
 import calendar
+import random
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -16,6 +17,9 @@ from app.models.couple import (
     CoupleDatePlan,
     CoupleRestaurantCategory,
     CoupleRestaurantItem,
+    CoupleRestaurantCartItem,
+    CoupleRestaurantWish,
+    CoupleDateDraw,
 )
 from app.models.order import Order
 from app.models.notification import Notification
@@ -27,7 +31,12 @@ from app.utils.security import generate_binding_code
 MEMO_CATEGORIES = {"日常", "约会", "纪念日", "礼物", "其他"}
 ANNIVERSARY_TYPES = {"恋爱纪念日", "生日", "节日", "自定义"}
 DATE_PLAN_STATUSES = {"planned", "completed", "cancelled"}
+WISH_STATUSES = {"active", "done", "archived"}
+DATE_DRAW_STATUSES = {"drawn", "accepted", "completed", "cancelled"}
+DATE_DRAW_SOURCES = {"mixed", "wishes", "restaurant", "anniversaries"}
+RESTAURANT_RECOMMENDATION_SOURCES = {"mixed", "restaurant", "wishes"}
 MAX_RESTAURANT_IMAGES = 9
+MAX_RESTAURANT_TAGS = 8
 
 
 class CoupleServiceError(Exception):
@@ -105,6 +114,18 @@ def _calculate_love_days(anniversary_date: Optional[date]) -> int:
     return max(delta.days + 1, 0)
 
 
+def _format_short_datetime(value: Optional[datetime]) -> str:
+    if not value:
+        return "暂未设置时间"
+    return value.strftime("%m月%d日 %H:%M")
+
+
+def _format_short_date(value: Optional[date]) -> str:
+    if not value:
+        return "暂未设置日期"
+    return value.strftime("%Y年%m月%d日")
+
+
 def _normalize_title(title: str, title_type: str) -> str:
     normalized_title = title.strip()
     if not normalized_title:
@@ -168,6 +189,8 @@ def date_plan_to_dict(plan: CoupleDatePlan) -> dict:
         "note": plan.note,
         "anniversary_id": plan.anniversary_id,
         "order_id": plan.order_id,
+        "menu_items": plan.menu_items or [],
+        "menu_total": float(plan.menu_total or 0),
         "status": plan.status,
         "created_by": plan.created_by,
         "created_at": plan.created_at.isoformat() if plan.created_at else None,
@@ -191,6 +214,38 @@ def _normalize_price(price: float | Decimal) -> Decimal:
     return normalized
 
 
+def _normalize_date_plan_menu_items(menu_items: Optional[list[dict]]) -> tuple[list[dict], Decimal]:
+    if not menu_items:
+        return [], Decimal("0.00")
+
+    normalized_items: list[dict] = []
+    total = Decimal("0.00")
+    for raw_item in menu_items:
+        item_id = str(raw_item.get("item_id") or raw_item.get("id") or "").strip()
+        name = str(raw_item.get("name") or "").strip()
+        if not item_id or not name:
+            raise CoupleServiceError("约饭菜单信息不完整")
+
+        price = _normalize_price(raw_item.get("price", 0))
+        quantity = int(raw_item.get("quantity") or 1)
+        if quantity <= 0 or quantity > 99:
+            raise CoupleServiceError("菜单数量必须在 1 到 99 之间")
+
+        subtotal = (price * Decimal(quantity)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        normalized_items.append({
+            "item_id": item_id,
+            "name": name[:100],
+            "price": float(price),
+            "quantity": quantity,
+            "subtotal": float(subtotal),
+            "cover_image": _normalize_optional_text(raw_item.get("cover_image")),
+            "category_name": _normalize_optional_text(raw_item.get("category_name")),
+        })
+        total += subtotal
+
+    return normalized_items, total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
 def _normalize_images(images: list[str]) -> list[str]:
     normalized_images = [image.strip() for image in images if isinstance(image, str) and image.strip()]
     if not normalized_images:
@@ -198,6 +253,26 @@ def _normalize_images(images: list[str]) -> list[str]:
     if len(normalized_images) > MAX_RESTAURANT_IMAGES:
         raise CoupleServiceError(f"最多上传 {MAX_RESTAURANT_IMAGES} 张图片")
     return normalized_images
+
+
+def _normalize_tags(tags: Optional[list[str]]) -> list[str]:
+    if not tags:
+        return []
+
+    normalized_tags: list[str] = []
+    seen_tags = set()
+    for raw_tag in tags:
+        if not isinstance(raw_tag, str):
+            continue
+        tag = raw_tag.strip()
+        if not tag or tag in seen_tags:
+            continue
+        normalized_tags.append(tag[:16])
+        seen_tags.add(tag)
+        if len(normalized_tags) >= MAX_RESTAURANT_TAGS:
+            break
+
+    return normalized_tags
 
 
 def _get_category_or_raise(db: Session, relationship_id: str, category_id: str) -> CoupleRestaurantCategory:
@@ -218,6 +293,37 @@ def _get_restaurant_item_or_raise(db: Session, relationship_id: str, item_id: st
     if not item:
         raise CoupleServiceError("菜单不存在", code=404)
     return item
+
+
+def _get_restaurant_wish_or_raise(db: Session, relationship_id: str, wish_id: str) -> CoupleRestaurantWish:
+    wish = db.query(CoupleRestaurantWish).filter(
+        CoupleRestaurantWish.id == wish_id,
+        CoupleRestaurantWish.relationship_id == relationship_id
+    ).first()
+    if not wish:
+        raise CoupleServiceError("想吃清单记录不存在", code=404)
+    return wish
+
+
+def _get_restaurant_wish_by_item(
+    db: Session,
+    relationship_id: str,
+    item_id: str
+) -> Optional[CoupleRestaurantWish]:
+    return db.query(CoupleRestaurantWish).filter(
+        CoupleRestaurantWish.relationship_id == relationship_id,
+        CoupleRestaurantWish.item_id == item_id
+    ).first()
+
+
+def _get_date_draw_or_raise(db: Session, relationship_id: str, draw_id: str) -> CoupleDateDraw:
+    draw = db.query(CoupleDateDraw).filter(
+        CoupleDateDraw.id == draw_id,
+        CoupleDateDraw.relationship_id == relationship_id
+    ).first()
+    if not draw:
+        raise CoupleServiceError("抽卡记录不存在", code=404)
+    return draw
 
 
 def restaurant_category_to_dict(db: Session, category: CoupleRestaurantCategory) -> dict:
@@ -249,11 +355,118 @@ def restaurant_item_to_dict(item: CoupleRestaurantItem) -> dict:
         "price": float(item.price or 0),
         "images": images,
         "cover_image": images[0] if images else None,
+        "tags": item.tags or [],
         "description": item.description,
         "created_by": item.created_by,
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "updated_at": item.updated_at.isoformat() if item.updated_at else None,
     }
+
+
+def restaurant_cart_item_to_dict(cart_item: CoupleRestaurantCartItem) -> dict:
+    item_data = restaurant_item_to_dict(cart_item.item)
+    subtotal = _normalize_price(item_data["price"]) * Decimal(cart_item.quantity)
+    return {
+        "id": cart_item.id,
+        "relationship_id": cart_item.relationship_id,
+        "item_id": cart_item.item_id,
+        "quantity": cart_item.quantity,
+        "item": item_data,
+        "subtotal": float(subtotal.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "created_by": cart_item.created_by,
+        "created_at": cart_item.created_at.isoformat() if cart_item.created_at else None,
+        "updated_at": cart_item.updated_at.isoformat() if cart_item.updated_at else None,
+    }
+
+
+def restaurant_wish_to_dict(wish: CoupleRestaurantWish) -> dict:
+    item_data = restaurant_item_to_dict(wish.item) if wish.item else None
+    return {
+        "id": wish.id,
+        "relationship_id": wish.relationship_id,
+        "item_id": wish.item_id,
+        "note": wish.note,
+        "priority": wish.priority,
+        "status": wish.status,
+        "created_by": wish.created_by,
+        "created_at": wish.created_at.isoformat() if wish.created_at else None,
+        "updated_at": wish.updated_at.isoformat() if wish.updated_at else None,
+        "item": item_data,
+    }
+
+
+def date_draw_to_dict(draw: CoupleDateDraw) -> dict:
+    return {
+        "id": draw.id,
+        "relationship_id": draw.relationship_id,
+        "title": draw.title,
+        "subtitle": draw.subtitle,
+        "card_type": draw.card_type,
+        "source_item_id": draw.source_item_id,
+        "source_item_type": draw.source_item_type,
+        "content": draw.content,
+        "payload": draw.payload or {},
+        "plan_id": draw.plan_id,
+        "status": draw.status,
+        "created_by": draw.created_by,
+        "created_at": draw.created_at.isoformat() if draw.created_at else None,
+        "updated_at": draw.updated_at.isoformat() if draw.updated_at else None,
+    }
+
+
+def _notify_partner_date_draw_event(
+    db: Session,
+    relationship: CoupleRelationship,
+    actor: User,
+    draw: CoupleDateDraw,
+    action: str,
+) -> None:
+    partner = get_partner_from_relationship(relationship, actor.id)
+    if not partner:
+        return
+
+    actor_name = actor.nickname or "对方"
+    title = "约会抽卡有更新"
+    content = f"{actor_name} 更新了“{draw.title}”"
+
+    if action == "drawn":
+        title = "抽到一张约会卡"
+        content = f"{actor_name} 抽到了“{draw.title}”"
+        if draw.subtitle:
+            content = f"{content}，{draw.subtitle}"
+    elif action == "accepted":
+        title = "约会卡已接受"
+        content = f"{actor_name} 接受了“{draw.title}”"
+        if draw.plan_id:
+            content = f"{content}，并生成了新的约饭计划"
+    elif action == "completed":
+        title = "约会卡已完成"
+        content = f"{actor_name} 已完成“{draw.title}”"
+    elif action == "cancelled":
+        title = "约会卡先放一放"
+        content = f"{actor_name} 暂时取消了“{draw.title}”"
+    elif action == "restored":
+        title = "约会卡重新开启"
+        content = f"{actor_name} 重新开启了“{draw.title}”"
+
+    create_notification(
+        db=db,
+        user_id=partner.id,
+        notification_type="couple_date_draw",
+        title=title,
+        content=content,
+        data={
+            "kind": "couple_date_draw",
+            "action": action,
+            "draw_id": draw.id,
+            "draw_title": draw.title,
+            "draw_status": draw.status,
+            "card_type": draw.card_type,
+            "plan_id": draw.plan_id,
+            "actor_id": actor.id,
+            "actor_name": actor_name,
+        }
+    )
 
 
 def get_couple_profile(db: Session, user: User) -> dict:
@@ -433,6 +646,58 @@ def list_memos(db: Session, relationship: CoupleRelationship, status_filter: Opt
     ).all()
 
 
+def _notify_partner_memo_event(
+    db: Session,
+    relationship: CoupleRelationship,
+    actor: User,
+    memo: CoupleMemo,
+    action: str,
+) -> None:
+    partner = get_partner_from_relationship(relationship, actor.id)
+    if not partner:
+        return
+
+    actor_name = actor.nickname or "对方"
+    title = "情侣备忘录更新"
+    content = f"{actor_name} 更新了“{memo.title}”"
+
+    if action == "created":
+        title = "新的情侣备忘录"
+        content = f"{actor_name} 新建了“{memo.title}”"
+        if memo.remind_at:
+            content = f"{content}，提醒时间是 {_format_short_datetime(memo.remind_at)}"
+    elif action == "updated":
+        title = "情侣备忘录有更新"
+        content = f"{actor_name} 更新了“{memo.title}”"
+    elif action == "completed":
+        title = "情侣备忘录已完成"
+        content = f"{actor_name} 已完成“{memo.title}”"
+    elif action == "restored":
+        title = "情侣备忘录重新开启"
+        content = f"{actor_name} 重新把“{memo.title}”设为待处理"
+    elif action == "deleted":
+        title = "情侣备忘录已删除"
+        content = f"{actor_name} 删除了“{memo.title}”"
+
+    create_notification(
+        db=db,
+        user_id=partner.id,
+        notification_type="couple_memo",
+        title=title,
+        content=content,
+        data={
+            "kind": "couple_memo",
+            "action": action,
+            "memo_id": memo.id,
+            "memo_title": memo.title,
+            "category": memo.category,
+            "is_completed": memo.is_completed,
+            "actor_id": actor.id,
+            "actor_name": actor_name,
+        }
+    )
+
+
 def create_memo(
     db: Session,
     relationship: CoupleRelationship,
@@ -459,12 +724,14 @@ def create_memo(
     db.add(memo)
     db.commit()
     db.refresh(memo)
+    _notify_partner_memo_event(db, relationship, current_user, memo, "created")
     return memo
 
 
 def update_memo(
     db: Session,
     relationship: CoupleRelationship,
+    current_user: User,
     memo_id: str,
     title: Optional[str] = None,
     content: Optional[str] = None,
@@ -474,42 +741,73 @@ def update_memo(
     remind_at_provided: bool = False,
 ) -> CoupleMemo:
     memo = _get_memo_or_raise(db, relationship.id, memo_id)
+    has_changes = False
 
     if title is not None:
-        memo.title = _normalize_title(title, "备忘录")
+        normalized_title = _normalize_title(title, "备忘录")
+        if memo.title != normalized_title:
+            memo.title = normalized_title
+            has_changes = True
     if content is not None:
-        memo.content = content
+        if memo.content != content:
+            memo.content = content
+            has_changes = True
     if category is not None:
         if category not in MEMO_CATEGORIES:
             raise CoupleServiceError("无效的备忘录分类")
-        memo.category = category
+        if memo.category != category:
+            memo.category = category
+            has_changes = True
     if remind_at_provided:
-        memo.remind_at = remind_at
+        if memo.remind_at != remind_at:
+            memo.remind_at = remind_at
+            has_changes = True
     if is_pinned is not None:
-        memo.is_pinned = is_pinned
+        if memo.is_pinned != is_pinned:
+            memo.is_pinned = is_pinned
+            has_changes = True
 
     db.commit()
     db.refresh(memo)
+    if has_changes:
+        _notify_partner_memo_event(db, relationship, current_user, memo, "updated")
     return memo
 
 
 def update_memo_status(
     db: Session,
     relationship: CoupleRelationship,
+    current_user: User,
     memo_id: str,
     is_completed: bool
 ) -> CoupleMemo:
     memo = _get_memo_or_raise(db, relationship.id, memo_id)
+    if memo.is_completed == is_completed:
+        return memo
     memo.is_completed = is_completed
     db.commit()
     db.refresh(memo)
+    _notify_partner_memo_event(
+        db,
+        relationship,
+        current_user,
+        memo,
+        "completed" if is_completed else "restored",
+    )
     return memo
 
 
-def delete_memo(db: Session, relationship: CoupleRelationship, memo_id: str) -> None:
+def delete_memo(db: Session, relationship: CoupleRelationship, current_user: User, memo_id: str) -> None:
     memo = _get_memo_or_raise(db, relationship.id, memo_id)
+    memo_snapshot = CoupleMemo(
+        id=memo.id,
+        title=memo.title,
+        category=memo.category,
+        is_completed=memo.is_completed,
+    )
     db.delete(memo)
     db.commit()
+    _notify_partner_memo_event(db, relationship, current_user, memo_snapshot, "deleted")
 
 
 def get_memo_detail(db: Session, relationship: CoupleRelationship, memo_id: str) -> CoupleMemo:
@@ -522,9 +820,53 @@ def list_anniversaries(db: Session, relationship: CoupleRelationship) -> list[Co
     ).order_by(asc(CoupleAnniversary.date)).all()
 
 
+def _notify_partner_anniversary_event(
+    db: Session,
+    relationship: CoupleRelationship,
+    actor: User,
+    anniversary: CoupleAnniversary,
+    action: str,
+) -> None:
+    partner = get_partner_from_relationship(relationship, actor.id)
+    if not partner:
+        return
+
+    actor_name = actor.nickname or "对方"
+    title = "纪念日有更新"
+    content = f"{actor_name} 更新了“{anniversary.title}”"
+
+    if action == "created":
+        title = "新的纪念日"
+        content = f"{actor_name} 新增了“{anniversary.title}”，日期是 {_format_short_date(anniversary.date)}"
+    elif action == "updated":
+        title = "纪念日安排已更新"
+        content = f"{actor_name} 更新了“{anniversary.title}”，当前日期是 {_format_short_date(anniversary.date)}"
+    elif action == "deleted":
+        title = "纪念日已删除"
+        content = f"{actor_name} 删除了“{anniversary.title}”"
+
+    create_notification(
+        db=db,
+        user_id=partner.id,
+        notification_type="couple_anniversary",
+        title=title,
+        content=content,
+        data={
+            "kind": "couple_anniversary",
+            "action": action,
+            "anniversary_id": anniversary.id,
+            "anniversary_title": anniversary.title,
+            "anniversary_type": anniversary.type,
+            "actor_id": actor.id,
+            "actor_name": actor_name,
+        }
+    )
+
+
 def create_anniversary(
     db: Session,
     relationship: CoupleRelationship,
+    current_user: User,
     title: str,
     target_date: date,
     anniversary_type: str,
@@ -546,12 +888,14 @@ def create_anniversary(
     db.add(anniversary)
     db.commit()
     db.refresh(anniversary)
+    _notify_partner_anniversary_event(db, relationship, current_user, anniversary, "created")
     return anniversary
 
 
 def update_anniversary(
     db: Session,
     relationship: CoupleRelationship,
+    current_user: User,
     anniversary_id: str,
     title: Optional[str] = None,
     target_date: Optional[date] = None,
@@ -561,29 +905,50 @@ def update_anniversary(
     note_provided: bool = False,
 ) -> CoupleAnniversary:
     anniversary = _get_anniversary_or_raise(db, relationship.id, anniversary_id)
+    has_changes = False
 
     if title is not None:
-        anniversary.title = _normalize_title(title, "纪念日")
+        normalized_title = _normalize_title(title, "纪念日")
+        if anniversary.title != normalized_title:
+            anniversary.title = normalized_title
+            has_changes = True
     if target_date is not None:
-        anniversary.date = target_date
+        if anniversary.date != target_date:
+            anniversary.date = target_date
+            has_changes = True
     if anniversary_type is not None:
         if anniversary_type not in ANNIVERSARY_TYPES:
             raise CoupleServiceError("无效的纪念日类型")
-        anniversary.type = anniversary_type
+        if anniversary.type != anniversary_type:
+            anniversary.type = anniversary_type
+            has_changes = True
     if remind_days_before is not None:
-        anniversary.remind_days_before = remind_days_before
+        if anniversary.remind_days_before != remind_days_before:
+            anniversary.remind_days_before = remind_days_before
+            has_changes = True
     if note_provided:
-        anniversary.note = note
+        if anniversary.note != note:
+            anniversary.note = note
+            has_changes = True
 
     db.commit()
     db.refresh(anniversary)
+    if has_changes:
+        _notify_partner_anniversary_event(db, relationship, current_user, anniversary, "updated")
     return anniversary
 
 
-def delete_anniversary(db: Session, relationship: CoupleRelationship, anniversary_id: str) -> None:
+def delete_anniversary(db: Session, relationship: CoupleRelationship, current_user: User, anniversary_id: str) -> None:
     anniversary = _get_anniversary_or_raise(db, relationship.id, anniversary_id)
+    anniversary_snapshot = CoupleAnniversary(
+        id=anniversary.id,
+        title=anniversary.title,
+        date=anniversary.date,
+        type=anniversary.type,
+    )
     db.delete(anniversary)
     db.commit()
+    _notify_partner_anniversary_event(db, relationship, current_user, anniversary_snapshot, "deleted")
 
 
 def list_date_plans(
@@ -604,6 +969,71 @@ def list_date_plans(
     ).all()
 
 
+def _format_date_plan_schedule(plan_at: datetime, location: Optional[str]) -> str:
+    schedule = plan_at.strftime("%m月%d日 %H:%M")
+    if location:
+        return f"{schedule} · {location}"
+    return schedule
+
+
+def _notify_partner_date_plan_event(
+    db: Session,
+    relationship: CoupleRelationship,
+    actor: User,
+    plan_id: str,
+    plan_title: str,
+    plan_at: datetime,
+    location: Optional[str],
+    status: str,
+    action: str,
+) -> None:
+    partner = get_partner_from_relationship(relationship, actor.id)
+    if not partner:
+        return
+
+    actor_name = actor.nickname or "对方"
+    schedule = _format_date_plan_schedule(plan_at, location)
+
+    title = "约饭计划更新"
+    content = f"{actor_name} 更新了“{plan_title}”"
+
+    if action == "created":
+        title = "新的约饭计划"
+        content = f"{actor_name} 新建了“{plan_title}”，安排在 {schedule}"
+    elif action == "updated":
+        title = "约饭计划有新变动"
+        content = f"{actor_name} 更新了“{plan_title}”，当前安排在 {schedule}"
+    elif action == "completed":
+        title = "约饭计划已完成"
+        content = f"{actor_name} 已将“{plan_title}”标记为已完成"
+    elif action == "restored":
+        title = "约饭计划已恢复"
+        content = f"{actor_name} 重新开启了“{plan_title}”，当前安排在 {schedule}"
+    elif action == "cancelled":
+        title = "约饭计划已取消"
+        content = f"{actor_name} 取消了“{plan_title}”"
+    elif action == "deleted":
+        title = "约饭计划已删除"
+        content = f"{actor_name} 删除了“{plan_title}”"
+
+    create_notification(
+        db=db,
+        user_id=partner.id,
+        notification_type="couple_date_plan",
+        title=title,
+        content=content,
+        data={
+            "kind": "couple_date_plan",
+            "action": action,
+            "plan_id": plan_id,
+            "plan_title": plan_title,
+            "status": status,
+            "actor_id": actor.id,
+            "actor_name": actor_name,
+        }
+    )
+
+
 def create_date_plan(
     db: Session,
     relationship: CoupleRelationship,
@@ -614,10 +1044,13 @@ def create_date_plan(
     note: Optional[str],
     anniversary_id: Optional[str],
     order_id: Optional[str],
+    menu_items: Optional[list[dict]] = None,
+    notify_partner: bool = True,
 ) -> CoupleDatePlan:
     normalized_title = _normalize_title(title, "约饭计划")
     _validate_anniversary_link(db, relationship, anniversary_id)
     _validate_order_link(db, relationship, order_id)
+    normalized_menu_items, menu_total = _normalize_date_plan_menu_items(menu_items)
 
     plan = CoupleDatePlan(
         relationship_id=relationship.id,
@@ -627,17 +1060,32 @@ def create_date_plan(
         note=note,
         anniversary_id=anniversary_id,
         order_id=order_id,
+        menu_items=normalized_menu_items,
+        menu_total=menu_total,
         created_by=current_user.id,
     )
     db.add(plan)
     db.commit()
     db.refresh(plan)
+    if notify_partner:
+        _notify_partner_date_plan_event(
+            db,
+            relationship,
+            current_user,
+            plan.id,
+            plan.title,
+            plan.plan_at,
+            plan.location,
+            plan.status,
+            "created",
+        )
     return plan
 
 
 def update_date_plan(
     db: Session,
     relationship: CoupleRelationship,
+    current_user: User,
     plan_id: str,
     title: Optional[str] = None,
     plan_at: Optional[datetime] = None,
@@ -645,36 +1093,73 @@ def update_date_plan(
     note: Optional[str] = None,
     anniversary_id: Optional[str] = None,
     order_id: Optional[str] = None,
+    menu_items: Optional[list[dict]] = None,
     location_provided: bool = False,
     note_provided: bool = False,
     anniversary_id_provided: bool = False,
     order_id_provided: bool = False,
+    menu_items_provided: bool = False,
 ) -> CoupleDatePlan:
     plan = _get_date_plan_or_raise(db, relationship.id, plan_id)
+    has_changes = False
 
     if title is not None:
-        plan.title = _normalize_title(title, "约饭计划")
+        normalized_title = _normalize_title(title, "约饭计划")
+        if plan.title != normalized_title:
+            plan.title = normalized_title
+            has_changes = True
     if plan_at is not None:
-        plan.plan_at = plan_at
+        if plan.plan_at != plan_at:
+            plan.plan_at = plan_at
+            has_changes = True
     if location_provided:
-        plan.location = location
+        if plan.location != location:
+            plan.location = location
+            has_changes = True
     if note_provided:
-        plan.note = note
+        if plan.note != note:
+            plan.note = note
+            has_changes = True
     if anniversary_id_provided:
         _validate_anniversary_link(db, relationship, anniversary_id)
-        plan.anniversary_id = anniversary_id
+        if plan.anniversary_id != anniversary_id:
+            plan.anniversary_id = anniversary_id
+            has_changes = True
     if order_id_provided:
         _validate_order_link(db, relationship, order_id)
-        plan.order_id = order_id
+        if plan.order_id != order_id:
+            plan.order_id = order_id
+            has_changes = True
+    if menu_items_provided:
+        normalized_menu_items, menu_total = _normalize_date_plan_menu_items(menu_items)
+        if plan.menu_items != normalized_menu_items:
+            plan.menu_items = normalized_menu_items
+            has_changes = True
+        if plan.menu_total != menu_total:
+            plan.menu_total = menu_total
+            has_changes = True
 
     db.commit()
     db.refresh(plan)
+    if has_changes:
+        _notify_partner_date_plan_event(
+            db,
+            relationship,
+            current_user,
+            plan.id,
+            plan.title,
+            plan.plan_at,
+            plan.location,
+            plan.status,
+            "updated",
+        )
     return plan
 
 
 def update_date_plan_status(
     db: Session,
     relationship: CoupleRelationship,
+    current_user: User,
     plan_id: str,
     status: str,
 ) -> CoupleDatePlan:
@@ -682,20 +1167,189 @@ def update_date_plan_status(
         raise CoupleServiceError("无效的约饭计划状态")
 
     plan = _get_date_plan_or_raise(db, relationship.id, plan_id)
+    previous_status = plan.status
+    if previous_status == status:
+        return plan
+
     plan.status = status
     db.commit()
     db.refresh(plan)
+
+    action = "updated"
+    if status == "completed":
+        action = "completed"
+    elif status == "cancelled":
+        action = "cancelled"
+    elif status == "planned" and previous_status in {"completed", "cancelled"}:
+        action = "restored"
+
+    _notify_partner_date_plan_event(
+        db,
+        relationship,
+        current_user,
+        plan.id,
+        plan.title,
+        plan.plan_at,
+        plan.location,
+        plan.status,
+        action,
+    )
     return plan
 
 
-def delete_date_plan(db: Session, relationship: CoupleRelationship, plan_id: str) -> None:
+def delete_date_plan(db: Session, relationship: CoupleRelationship, current_user: User, plan_id: str) -> None:
     plan = _get_date_plan_or_raise(db, relationship.id, plan_id)
+    plan_snapshot = {
+        "id": plan.id,
+        "title": plan.title,
+        "plan_at": plan.plan_at,
+        "location": plan.location,
+        "status": plan.status,
+    }
     db.delete(plan)
     db.commit()
+    _notify_partner_date_plan_event(
+        db,
+        relationship,
+        current_user,
+        plan_snapshot["id"],
+        plan_snapshot["title"],
+        plan_snapshot["plan_at"],
+        plan_snapshot["location"],
+        plan_snapshot["status"],
+        "deleted",
+    )
 
 
 def get_date_plan_detail(db: Session, relationship: CoupleRelationship, plan_id: str) -> CoupleDatePlan:
     return _get_date_plan_or_raise(db, relationship.id, plan_id)
+
+
+def list_restaurant_wishes(
+    db: Session,
+    relationship: CoupleRelationship,
+    status_filter: Optional[str] = None,
+    keyword: Optional[str] = None,
+) -> list[CoupleRestaurantWish]:
+    query = db.query(CoupleRestaurantWish).join(
+        CoupleRestaurantItem,
+        CoupleRestaurantWish.item_id == CoupleRestaurantItem.id
+    ).filter(
+        CoupleRestaurantWish.relationship_id == relationship.id,
+        CoupleRestaurantItem.relationship_id == relationship.id
+    )
+
+    if status_filter and status_filter != "all":
+        if status_filter not in WISH_STATUSES:
+            raise CoupleServiceError("无效的想吃清单状态")
+        query = query.filter(CoupleRestaurantWish.status == status_filter)
+
+    if keyword:
+        normalized_keyword = keyword.strip()
+        if normalized_keyword:
+            keyword_pattern = f"%{normalized_keyword}%"
+            query = query.filter(
+                or_(
+                    CoupleRestaurantItem.name.ilike(keyword_pattern),
+                    CoupleRestaurantItem.description.ilike(keyword_pattern),
+                    CoupleRestaurantWish.note.ilike(keyword_pattern),
+                )
+            )
+
+    return query.order_by(
+        desc(CoupleRestaurantWish.priority),
+        asc(CoupleRestaurantWish.created_at)
+    ).all()
+
+
+def create_restaurant_wish(
+    db: Session,
+    relationship: CoupleRelationship,
+    current_user: User,
+    item_id: str,
+    note: Optional[str],
+    priority: int = 0,
+) -> CoupleRestaurantWish:
+    _get_restaurant_item_or_raise(db, relationship.id, item_id)
+    existing = _get_restaurant_wish_by_item(db, relationship.id, item_id)
+    normalized_note = _normalize_optional_text(note)
+
+    if existing:
+        existing.note = normalized_note
+        existing.priority = priority
+        existing.status = "active"
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    wish = CoupleRestaurantWish(
+        relationship_id=relationship.id,
+        item_id=item_id,
+        note=normalized_note,
+        priority=priority,
+        status="active",
+        created_by=current_user.id,
+    )
+    db.add(wish)
+    db.commit()
+    db.refresh(wish)
+    return wish
+
+
+def update_restaurant_wish(
+    db: Session,
+    relationship: CoupleRelationship,
+    wish_id: str,
+    note: Optional[str] = None,
+    priority: Optional[int] = None,
+    status: Optional[str] = None,
+    note_provided: bool = False,
+) -> CoupleRestaurantWish:
+    wish = _get_restaurant_wish_or_raise(db, relationship.id, wish_id)
+
+    if note_provided:
+        wish.note = _normalize_optional_text(note)
+    if priority is not None:
+        wish.priority = priority
+    if status is not None:
+        if status not in WISH_STATUSES:
+            raise CoupleServiceError("无效的想吃清单状态")
+        wish.status = status
+
+    db.commit()
+    db.refresh(wish)
+    return wish
+
+
+def delete_restaurant_wish(db: Session, relationship: CoupleRelationship, wish_id: str) -> None:
+    wish = _get_restaurant_wish_or_raise(db, relationship.id, wish_id)
+    db.delete(wish)
+    db.commit()
+
+
+def _build_restaurant_recommendation_payload(
+    *,
+    title: str,
+    subtitle: str,
+    seed_value: str,
+    anniversary: Optional[CoupleAnniversary],
+    recommended_items: list[CoupleRestaurantItem],
+    source: str,
+) -> dict:
+    total_amount = sum(Decimal(item.price or 0) for item in recommended_items).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP,
+    ) if recommended_items else Decimal("0.00")
+
+    return {
+        "title": title,
+        "subtitle": subtitle,
+        "seed": seed_value,
+        "anniversary_id": anniversary.id if anniversary else None,
+        "source": source,
+        "items": [restaurant_item_to_dict(item) for item in recommended_items],
+        "total_amount": float(total_amount),
+    }
 
 
 def list_restaurant_categories(
@@ -825,21 +1479,26 @@ def list_restaurant_items(
         _get_category_or_raise(db, relationship.id, category_id)
         query = query.filter(CoupleRestaurantItem.category_id == category_id)
 
-    if keyword:
-        normalized_keyword = keyword.strip()
-        if normalized_keyword:
-            keyword_pattern = f"%{normalized_keyword}%"
-            query = query.filter(
-                or_(
-                    CoupleRestaurantItem.name.ilike(keyword_pattern),
-                    CoupleRestaurantItem.description.ilike(keyword_pattern),
-                )
-            )
-
-    return query.order_by(
+    items = query.order_by(
         asc(CoupleRestaurantItem.created_at),
         desc(CoupleRestaurantItem.updated_at)
     ).all()
+
+    if keyword:
+        normalized_keyword = keyword.strip().lower()
+        if normalized_keyword:
+            filtered_items: list[CoupleRestaurantItem] = []
+            for item in items:
+                haystacks = [
+                    (item.name or "").lower(),
+                    (item.description or "").lower(),
+                    *[((tag or "").lower()) for tag in (item.tags or [])],
+                ]
+                if any(normalized_keyword in text for text in haystacks):
+                    filtered_items.append(item)
+            return filtered_items
+
+    return items
 
 
 def create_restaurant_item(
@@ -850,11 +1509,13 @@ def create_restaurant_item(
     name: str,
     price: float,
     images: list[str],
+    tags: Optional[list[str]],
     description: Optional[str],
 ) -> CoupleRestaurantItem:
     _get_category_or_raise(db, relationship.id, category_id)
     normalized_name = _normalize_title(name, "菜单")
     normalized_images = _normalize_images(images)
+    normalized_tags = _normalize_tags(tags)
     normalized_description = _normalize_optional_text(description)
     normalized_price = _normalize_price(price)
 
@@ -864,6 +1525,7 @@ def create_restaurant_item(
         name=normalized_name,
         price=normalized_price,
         images=normalized_images,
+        tags=normalized_tags,
         description=normalized_description,
         created_by=current_user.id,
     )
@@ -881,9 +1543,11 @@ def update_restaurant_item(
     name: Optional[str] = None,
     price: Optional[float] = None,
     images: Optional[list[str]] = None,
+    tags: Optional[list[str]] = None,
     description: Optional[str] = None,
     description_provided: bool = False,
     images_provided: bool = False,
+    tags_provided: bool = False,
 ) -> CoupleRestaurantItem:
     item = _get_restaurant_item_or_raise(db, relationship.id, item_id)
 
@@ -896,6 +1560,8 @@ def update_restaurant_item(
         item.price = _normalize_price(price)
     if images_provided:
         item.images = _normalize_images(images or [])
+    if tags_provided:
+        item.tags = _normalize_tags(tags)
     if description_provided:
         item.description = _normalize_optional_text(description)
 
@@ -910,6 +1576,14 @@ def delete_restaurant_item(
     item_id: str
 ) -> None:
     item = _get_restaurant_item_or_raise(db, relationship.id, item_id)
+    db.query(CoupleRestaurantWish).filter(
+        CoupleRestaurantWish.relationship_id == relationship.id,
+        CoupleRestaurantWish.item_id == item_id
+    ).delete(synchronize_session=False)
+    db.query(CoupleRestaurantCartItem).filter(
+        CoupleRestaurantCartItem.relationship_id == relationship.id,
+        CoupleRestaurantCartItem.item_id == item_id
+    ).delete(synchronize_session=False)
     db.delete(item)
     db.commit()
 
@@ -929,11 +1603,443 @@ def get_restaurant_dashboard(
 ) -> dict:
     categories = list_restaurant_categories(db, relationship)
     items = list_restaurant_items(db, relationship, keyword=keyword)
+    wishes = list_restaurant_wishes(db, relationship, "active")
     return {
         "categories": [restaurant_category_to_dict(db, category) for category in categories],
         "items": [restaurant_item_to_dict(item) for item in items],
         "total_items": len(items),
+        "wish_count": len(wishes),
     }
+
+
+def get_restaurant_recommendation(
+    db: Session,
+    relationship: CoupleRelationship,
+    seed: Optional[str] = None,
+    anniversary_id: Optional[str] = None,
+    source: str = "mixed",
+    category_id: Optional[str] = None,
+) -> dict:
+    if source not in RESTAURANT_RECOMMENDATION_SOURCES:
+        raise CoupleServiceError("无效的推荐来源")
+    anniversary = _get_anniversary_or_raise(db, relationship.id, anniversary_id) if anniversary_id else None
+    items = list_restaurant_items(db, relationship, category_id=category_id)
+    active_wishes = list_restaurant_wishes(db, relationship, "active")
+    wished_item_ids = {wish.item_id for wish in active_wishes}
+
+    seed_value = seed or (
+        f"anniversary:{anniversary.id}:{anniversary.title}:{anniversary.type}"
+        if anniversary else _today().isoformat()
+    )
+    if category_id:
+        category = _get_category_or_raise(db, relationship.id, category_id)
+        seed_value = f"{seed_value}:category:{category.id}"
+    else:
+        category = None
+
+    title = f"{anniversary.title}推荐菜单" if anniversary else "今天就吃这一组"
+
+    if not items:
+        return {
+            "title": "先把喜欢的菜放进小餐厅",
+            "subtitle": "有了共享菜单后，我就能帮你们为重要日子挑一组。",
+            "seed": seed_value,
+            "anniversary_id": anniversary.id if anniversary else None,
+            "source": source,
+            "items": [],
+            "total_amount": 0,
+        }
+
+    randomizer = random.Random(f"{relationship.id}:{seed_value}")
+    if source == "wishes":
+        candidate_items = [item for item in items if item.id in wished_item_ids]
+    elif source == "restaurant":
+        candidate_items = items[:]
+    else:
+        wished_items = [item for item in items if item.id in wished_item_ids]
+        other_items = [item for item in items if item.id not in wished_item_ids]
+        candidate_items = wished_items + other_items
+
+    if not candidate_items:
+        return {
+            "title": "想吃清单还没有内容",
+            "subtitle": "先把几道想一起吃的菜加入想吃清单，再来抽今天吃什么。",
+            "seed": seed_value,
+            "anniversary_id": anniversary.id if anniversary else None,
+            "source": source,
+            "items": [],
+            "total_amount": 0,
+        }
+
+    shuffled_items = candidate_items[:]
+    randomizer.shuffle(shuffled_items)
+    recommended_items = shuffled_items[:min(3, len(shuffled_items))]
+    category_names = [item.category.name for item in recommended_items if item.category]
+    unique_category_names = list(dict.fromkeys(category_names))
+    subtitle_prefix = "、".join(unique_category_names[:2]) or "共享菜单"
+    if category:
+        subtitle_prefix = category.name
+    if anniversary:
+        subtitle = f"{anniversary.type} · {subtitle_prefix} · {len(recommended_items)} 道推荐"
+    elif source == "wishes":
+        subtitle = f"优先从想吃清单里挑了 {len(recommended_items)} 道"
+    elif source == "mixed" and wished_item_ids:
+        subtitle = f"想吃清单优先 · {subtitle_prefix} · {len(recommended_items)} 道推荐"
+    else:
+        subtitle = f"{subtitle_prefix} · {len(recommended_items)} 道推荐"
+
+    return _build_restaurant_recommendation_payload(
+        title=title,
+        subtitle=subtitle,
+        seed_value=seed_value,
+        anniversary=anniversary,
+        recommended_items=recommended_items,
+        source=source,
+    )
+
+
+def list_restaurant_cart_items(
+    db: Session,
+    relationship: CoupleRelationship
+) -> list[CoupleRestaurantCartItem]:
+    return db.query(CoupleRestaurantCartItem).join(
+        CoupleRestaurantItem,
+        CoupleRestaurantCartItem.item_id == CoupleRestaurantItem.id
+    ).filter(
+        CoupleRestaurantCartItem.relationship_id == relationship.id,
+        CoupleRestaurantItem.relationship_id == relationship.id
+    ).order_by(
+        asc(CoupleRestaurantCartItem.created_at),
+        asc(CoupleRestaurantCartItem.id)
+    ).all()
+
+
+def get_restaurant_cart(db: Session, relationship: CoupleRelationship) -> dict:
+    cart_items = list_restaurant_cart_items(db, relationship)
+    cart_data = [restaurant_cart_item_to_dict(item) for item in cart_items]
+    total_amount = sum(
+        (Decimal(str(item["subtotal"])) for item in cart_data),
+        Decimal("0.00")
+    ).quantize(
+        Decimal("0.01"),
+        rounding=ROUND_HALF_UP
+    )
+    return {
+        "items": cart_data,
+        "total_quantity": sum(item["quantity"] for item in cart_data),
+        "total_amount": float(total_amount),
+    }
+
+
+def _get_restaurant_cart_item(
+    db: Session,
+    relationship_id: str,
+    item_id: str,
+) -> Optional[CoupleRestaurantCartItem]:
+    return db.query(CoupleRestaurantCartItem).filter(
+        CoupleRestaurantCartItem.relationship_id == relationship_id,
+        CoupleRestaurantCartItem.item_id == item_id
+    ).first()
+
+
+def add_restaurant_cart_item(
+    db: Session,
+    relationship: CoupleRelationship,
+    current_user: User,
+    item_id: str,
+    quantity: int,
+) -> dict:
+    _get_restaurant_item_or_raise(db, relationship.id, item_id)
+    cart_item = _get_restaurant_cart_item(db, relationship.id, item_id)
+
+    if cart_item:
+        next_quantity = cart_item.quantity + quantity
+        if next_quantity > 99:
+            raise CoupleServiceError("单个菜单最多只能加入 99 份")
+        cart_item.quantity = next_quantity
+    else:
+        cart_item = CoupleRestaurantCartItem(
+            relationship_id=relationship.id,
+            item_id=item_id,
+            quantity=quantity,
+            created_by=current_user.id,
+        )
+        db.add(cart_item)
+
+    db.commit()
+    return get_restaurant_cart(db, relationship)
+
+
+def set_restaurant_cart_item_quantity(
+    db: Session,
+    relationship: CoupleRelationship,
+    current_user: User,
+    item_id: str,
+    quantity: int,
+) -> dict:
+    _get_restaurant_item_or_raise(db, relationship.id, item_id)
+    cart_item = _get_restaurant_cart_item(db, relationship.id, item_id)
+
+    if cart_item:
+        cart_item.quantity = quantity
+    else:
+        cart_item = CoupleRestaurantCartItem(
+            relationship_id=relationship.id,
+            item_id=item_id,
+            quantity=quantity,
+            created_by=current_user.id,
+        )
+        db.add(cart_item)
+
+    db.commit()
+    return get_restaurant_cart(db, relationship)
+
+
+def remove_restaurant_cart_item(
+    db: Session,
+    relationship: CoupleRelationship,
+    item_id: str,
+) -> dict:
+    db.query(CoupleRestaurantCartItem).filter(
+        CoupleRestaurantCartItem.relationship_id == relationship.id,
+        CoupleRestaurantCartItem.item_id == item_id
+    ).delete(synchronize_session=False)
+    db.commit()
+    return get_restaurant_cart(db, relationship)
+
+
+def clear_restaurant_cart(db: Session, relationship: CoupleRelationship) -> dict:
+    db.query(CoupleRestaurantCartItem).filter(
+        CoupleRestaurantCartItem.relationship_id == relationship.id
+    ).delete(synchronize_session=False)
+    db.commit()
+    return get_restaurant_cart(db, relationship)
+
+
+def _build_date_draw_candidate_pool(
+    db: Session,
+    relationship: CoupleRelationship,
+    source: str,
+    category_id: Optional[str] = None,
+    anniversary_id: Optional[str] = None,
+) -> list[dict]:
+    if source not in DATE_DRAW_SOURCES:
+        raise CoupleServiceError("无效的抽卡来源")
+
+    candidates: list[dict] = []
+
+    if source in {"mixed", "wishes"}:
+        wishes = list_restaurant_wishes(db, relationship, "active")
+        for wish in wishes:
+            if not wish.item:
+                continue
+            if category_id and wish.item.category_id != category_id:
+                continue
+            candidates.append({
+                "card_type": "wish",
+                "source_item_id": wish.id,
+                "source_item_type": "couple_restaurant_wish",
+                "title": f"今晚试试 {wish.item.name}",
+                "subtitle": f"想吃清单 · {wish.item.category.name if wish.item.category else '共享菜单'}",
+                "content": wish.note or "从你们的想吃清单里抽到了一道值得安排的菜。",
+                "payload": {
+                    "wish_id": wish.id,
+                    "item": restaurant_item_to_dict(wish.item),
+                    "note": wish.note,
+                    "priority": wish.priority,
+                }
+            })
+
+    if source in {"mixed", "restaurant"}:
+        items = list_restaurant_items(db, relationship, category_id=category_id)
+        for item in items:
+            candidates.append({
+                "card_type": "food",
+                "source_item_id": item.id,
+                "source_item_type": "couple_restaurant_item",
+                "title": f"今天就吃 {item.name}",
+                "subtitle": f"共享菜单 · {item.category.name if item.category else '小餐厅'}",
+                "content": item.description or "从你们共同维护的小餐厅里抽到的一道菜。",
+                "payload": {
+                    "item": restaurant_item_to_dict(item),
+                }
+            })
+
+    if source in {"mixed", "anniversaries"}:
+        anniversaries = list_anniversaries(db, relationship)
+        for anniversary in anniversaries:
+            if anniversary_id and anniversary.id != anniversary_id:
+                continue
+            anniversary_data = anniversary_to_dict(anniversary)
+            candidates.append({
+                "card_type": "anniversary",
+                "source_item_id": anniversary.id,
+                "source_item_type": "couple_anniversary",
+                "title": f"{anniversary.title}约会提案",
+                "subtitle": f"{anniversary.type} · {anniversary_data['days_left']} 天后",
+                "content": anniversary.note or "把这个纪念日变成一次认真准备的约会吧。",
+                "payload": {
+                    "anniversary": anniversary_data,
+                }
+            })
+
+    return candidates
+
+
+def draw_date_card(
+    db: Session,
+    relationship: CoupleRelationship,
+    current_user: User,
+    source: str = "mixed",
+    category_id: Optional[str] = None,
+    anniversary_id: Optional[str] = None,
+    seed: Optional[str] = None,
+) -> CoupleDateDraw:
+    if category_id:
+        _get_category_or_raise(db, relationship.id, category_id)
+    if anniversary_id:
+        _get_anniversary_or_raise(db, relationship.id, anniversary_id)
+
+    candidates = _build_date_draw_candidate_pool(
+        db,
+        relationship,
+        source,
+        category_id=category_id,
+        anniversary_id=anniversary_id,
+    )
+    if not candidates:
+        raise CoupleServiceError("还没有可抽取的内容，先补充想吃清单或共享菜单吧")
+
+    seed_value = seed or f"{relationship.id}:{source}:{category_id or 'all'}:{anniversary_id or 'none'}:{_current_time().isoformat()}"
+    randomizer = random.Random(seed_value)
+    selected = randomizer.choice(candidates)
+
+    draw = CoupleDateDraw(
+        relationship_id=relationship.id,
+        title=selected["title"],
+        subtitle=selected.get("subtitle"),
+        card_type=selected["card_type"],
+        source_item_id=selected.get("source_item_id"),
+        source_item_type=selected.get("source_item_type"),
+        content=selected.get("content"),
+        payload={
+            **(selected.get("payload") or {}),
+            "source": source,
+            "seed": seed_value,
+            "category_id": category_id,
+            "anniversary_id": anniversary_id,
+        },
+        status="drawn",
+        created_by=current_user.id,
+    )
+    db.add(draw)
+    db.commit()
+    db.refresh(draw)
+    _notify_partner_date_draw_event(db, relationship, current_user, draw, "drawn")
+    return draw
+
+
+def list_date_draws(
+    db: Session,
+    relationship: CoupleRelationship,
+    status_filter: Optional[str] = None,
+) -> list[CoupleDateDraw]:
+    query = db.query(CoupleDateDraw).filter(
+        CoupleDateDraw.relationship_id == relationship.id
+    )
+
+    if status_filter and status_filter != "all":
+        if status_filter not in DATE_DRAW_STATUSES:
+            raise CoupleServiceError("无效的抽卡状态")
+        query = query.filter(CoupleDateDraw.status == status_filter)
+
+    return query.order_by(desc(CoupleDateDraw.created_at)).all()
+
+
+def accept_date_draw(
+    db: Session,
+    relationship: CoupleRelationship,
+    current_user: User,
+    draw_id: str,
+    title: Optional[str] = None,
+    plan_at: Optional[datetime] = None,
+    location: Optional[str] = None,
+    note: Optional[str] = None,
+) -> CoupleDateDraw:
+    draw = _get_date_draw_or_raise(db, relationship.id, draw_id)
+    if draw.status not in {"drawn", "accepted"}:
+        raise CoupleServiceError("当前抽卡记录不能再生成计划")
+    if draw.status == "accepted" and draw.plan_id:
+        existing_plan = _get_date_plan_or_raise(db, relationship.id, draw.plan_id)
+        if existing_plan:
+            db.refresh(draw)
+            return draw
+
+    payload = draw.payload or {}
+    draw_title = _normalize_title(title or draw.title or "情侣约会", "约会计划")
+    final_note = _normalize_optional_text(note) or _normalize_optional_text(draw.content)
+    final_plan_at = plan_at or (_current_time() + timedelta(days=1)).replace(second=0, microsecond=0)
+    anniversary_payload = payload.get("anniversary") if isinstance(payload, dict) else None
+    anniversary_id = None
+    menu_items = None
+
+    if isinstance(anniversary_payload, dict):
+        anniversary_id = anniversary_payload.get("id")
+
+    item_payload = payload.get("item") if isinstance(payload, dict) else None
+    if isinstance(item_payload, dict) and item_payload.get("id"):
+        menu_items = [{
+            "item_id": item_payload.get("id"),
+            "name": item_payload.get("name"),
+            "price": item_payload.get("price") or 0,
+            "quantity": 1,
+            "cover_image": item_payload.get("cover_image"),
+            "category_name": item_payload.get("category_name"),
+        }]
+
+    plan = create_date_plan(
+        db,
+        relationship,
+        current_user,
+        draw_title,
+        final_plan_at,
+        _normalize_optional_text(location),
+        final_note,
+        anniversary_id,
+        None,
+        menu_items,
+        notify_partner=False,
+    )
+
+    draw.plan_id = plan.id
+    draw.status = "accepted"
+    db.commit()
+    db.refresh(draw)
+    _notify_partner_date_draw_event(db, relationship, current_user, draw, "accepted")
+    return draw
+
+
+def update_date_draw_status(
+    db: Session,
+    relationship: CoupleRelationship,
+    current_user: User,
+    draw_id: str,
+    status: str,
+) -> CoupleDateDraw:
+    if status not in DATE_DRAW_STATUSES:
+        raise CoupleServiceError("无效的抽卡状态")
+    draw = _get_date_draw_or_raise(db, relationship.id, draw_id)
+    previous_status = draw.status
+    if previous_status == status:
+        return draw
+    draw.status = status
+    db.commit()
+    db.refresh(draw)
+    action = status
+    if status == "drawn" and previous_status in {"accepted", "completed", "cancelled"}:
+        action = "restored"
+    _notify_partner_date_draw_event(db, relationship, current_user, draw, action)
+    return draw
 
 
 def _notification_exists_today(
@@ -974,7 +2080,14 @@ def sync_due_notifications(db: Session, relationship: CoupleRelationship) -> Non
 
     for memo in due_memos:
         title = f"情侣备忘录提醒：{memo.title}"
-        data = {"kind": "couple_memo", "memo_id": memo.id}
+        data = {
+            "kind": "couple_memo",
+            "action": "reminder",
+            "memo_id": memo.id,
+            "memo_title": memo.title,
+            "category": memo.category,
+            "is_completed": memo.is_completed,
+        }
         for user_id in users:
             if not _notification_exists_today(db, user_id, "couple_memo", data):
                 create_notification(
@@ -990,7 +2103,13 @@ def sync_due_notifications(db: Session, relationship: CoupleRelationship) -> Non
         anniversary_data = anniversary_to_dict(anniversary)
         if anniversary_data["days_left"] <= anniversary.remind_days_before:
             title = f"纪念日提醒：{anniversary.title}"
-            data = {"kind": "couple_anniversary", "anniversary_id": anniversary.id}
+            data = {
+                "kind": "couple_anniversary",
+                "action": "reminder",
+                "anniversary_id": anniversary.id,
+                "anniversary_title": anniversary.title,
+                "anniversary_type": anniversary.type,
+            }
             for user_id in users:
                 if not _notification_exists_today(db, user_id, "couple_anniversary", data):
                     create_notification(
@@ -1012,7 +2131,13 @@ def sync_due_notifications(db: Session, relationship: CoupleRelationship) -> Non
 
     for plan in due_date_plans:
         title = f"约饭计划提醒：{plan.title}"
-        data = {"kind": "couple_date_plan", "plan_id": plan.id}
+        data = {
+            "kind": "couple_date_plan",
+            "action": "reminder",
+            "plan_id": plan.id,
+            "plan_title": plan.title,
+            "status": plan.status,
+        }
         content = "今天有一个约饭计划待确认"
         if plan.location:
             content = f"今天约在 {plan.location}，记得准时赴约"
@@ -1043,7 +2168,9 @@ def get_dashboard(db: Session, current_user: User) -> dict:
             "today_reminders": [],
             "upcoming_anniversaries": [],
             "memos": [],
-            "date_plans": []
+            "date_plans": [],
+            "restaurant_wishes": [],
+            "date_draws": [],
         }
 
     relationship = require_relationship(db, current_user)
@@ -1091,5 +2218,7 @@ def get_dashboard(db: Session, current_user: User) -> dict:
         "today_reminders": reminders,
         "upcoming_anniversaries": upcoming_anniversaries,
         "memos": [memo_to_dict(memo) for memo in list_memos(db, relationship)],
-        "date_plans": [date_plan_to_dict(plan) for plan in list_date_plans(db, relationship)[:3]]
+        "date_plans": [date_plan_to_dict(plan) for plan in list_date_plans(db, relationship)[:3]],
+        "restaurant_wishes": [restaurant_wish_to_dict(wish) for wish in list_restaurant_wishes(db, relationship, "active")[:5]],
+        "date_draws": [date_draw_to_dict(draw) for draw in list_date_draws(db, relationship)[:5]],
     }
