@@ -8,7 +8,7 @@ from app.models.address import Address
 from app.models.binding import Binding
 from app.models.notification import Notification
 from app.models.favorite import Favorite
-from app.models.admin import AdminBroadcast
+from app.models.admin import AdminBroadcast, AdminOperationLog
 from app.models.wallet import WalletTransaction
 from app.models.couple import (
     CoupleRelationship,
@@ -36,6 +36,7 @@ __all__ = [
     "Notification",
     "Favorite",
     "AdminBroadcast",
+    "AdminOperationLog",
     "WalletTransaction",
     "CoupleRelationship",
     "CoupleMemo",

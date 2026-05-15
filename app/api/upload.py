@@ -2,7 +2,7 @@
 文件上传API模块
 实现图片上传接口
 """
-from fastapi import APIRouter, UploadFile, File, Depends
+from fastapi import APIRouter, UploadFile, File, Depends, Form
 
 from app.schemas.common import ApiResponse
 from app.middleware.auth import get_current_user
@@ -14,6 +14,7 @@ router = APIRouter(prefix="/upload", tags=["Upload"])
 @router.post("/image", response_model=ApiResponse)
 async def upload_image(
     file: UploadFile = File(..., description="图片文件，支持jpg、png、gif格式，最大5MB"),
+    scene: str = Form("default", description="上传场景，支持 default/avatar/restaurant"),
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -24,7 +25,7 @@ async def upload_image(
     - 返回上传后的图片URL
     """
     # 调用上传服务处理文件
-    url = await upload_service.upload_image(file)
+    url = await upload_service.upload_image(file, scene=scene)
     
     return ApiResponse(
         code=200,

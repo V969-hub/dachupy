@@ -22,6 +22,11 @@ ALLOWED_IMAGE_TYPES = {
 
 # 允许的文件扩展名
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif"}
+UPLOAD_SCENE_SIZE_LIMITS = {
+    "default": settings.MAX_UPLOAD_SIZE,
+    "avatar": min(settings.MAX_UPLOAD_SIZE, 2 * 1024 * 1024),
+    "restaurant": min(settings.MAX_UPLOAD_SIZE, 3 * 1024 * 1024),
+}
 
 
 class UploadService:
@@ -61,7 +66,7 @@ class UploadService:
         
         return True, ALLOWED_IMAGE_TYPES[content_type]
     
-    async def validate_file_size(self, file: UploadFile) -> Tuple[bool, str]:
+    async def validate_file_size(self, file: UploadFile, max_size: int) -> Tuple[bool, str]:
         """
         验证文件大小
         
@@ -78,8 +83,8 @@ class UploadService:
         # 重置文件指针
         await file.seek(0)
         
-        if file_size > self.max_size:
-            max_mb = self.max_size / (1024 * 1024)
+        if file_size > max_size:
+            max_mb = max_size / (1024 * 1024)
             file_mb = file_size / (1024 * 1024)
             return False, f"文件大小 {file_mb:.2f}MB 超过限制 {max_mb:.0f}MB"
         
@@ -130,7 +135,7 @@ class UploadService:
         
         return filename
     
-    async def upload_image(self, file: UploadFile) -> str:
+    async def upload_image(self, file: UploadFile, scene: str = "default") -> str:
         """
         上传图片的完整流程
         
@@ -152,8 +157,11 @@ class UploadService:
             )
         extension = type_result
         
+        normalized_scene = (scene or "default").strip().lower() or "default"
+        max_size = UPLOAD_SCENE_SIZE_LIMITS.get(normalized_scene, self.max_size)
+
         # 验证文件大小
-        is_valid_size, size_error = await self.validate_file_size(file)
+        is_valid_size, size_error = await self.validate_file_size(file, max_size)
         if not is_valid_size:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

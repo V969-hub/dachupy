@@ -97,6 +97,25 @@ class CoupleDatePlan(Base):
     creator = relationship("User")
 
 
+class CoupleDailyMemory(Base):
+    """One shared memory entry for a couple on a specific date."""
+    __tablename__ = "couple_daily_memories"
+    __table_args__ = (
+        UniqueConstraint("relationship_id", "memory_date", name="uk_couple_daily_memory_relationship_date"),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    relationship_id = Column(String(36), nullable=False, comment="情侣关系ID")
+    memory_date = Column(Date, nullable=False, comment="记忆日期")
+    images = Column(JSON, nullable=False, default=list, comment="图片列表")
+    cover_image = Column(String(512), nullable=True, comment="封面图")
+    content = Column(Text, nullable=True, comment="当天一句话")
+    mood = Column(String(32), nullable=True, comment="心情标签")
+    created_by = Column(String(36), nullable=False, comment="最近编辑人")
+    created_at = Column(DateTime, server_default=func.now(), comment="创建时间")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), comment="更新时间")
+
+
 class CoupleRestaurantCategory(Base):
     """Shared restaurant categories maintained by a couple."""
     __tablename__ = "couple_restaurant_categories"

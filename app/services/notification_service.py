@@ -11,7 +11,7 @@ Requirements:
 """
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 
 from app.models.notification import Notification
 
@@ -21,6 +21,14 @@ VALID_NOTIFICATION_TYPES = [
     "binding",
     "tip",
     "system",
+    "couple_memo",
+    "couple_anniversary",
+    "couple_bind",
+    "couple_date_plan",
+    "couple_date_draw",
+]
+
+COUPLE_NOTIFICATION_TYPES = [
     "couple_memo",
     "couple_anniversary",
     "couple_bind",
@@ -92,6 +100,22 @@ def get_user_notifications(
     return notifications, total
 
 
+def _build_unread_query(
+    db: Session,
+    user_id: str,
+    notification_type: Optional[str] = None
+):
+    query = db.query(Notification).filter(
+        Notification.user_id == user_id,
+        Notification.is_read.is_(False)
+    )
+
+    if notification_type:
+        query = query.filter(Notification.type == notification_type)
+
+    return query
+
+
 def get_unread_count(db: Session, user_id: str) -> int:
     """
     获取用户未读通知数量。
@@ -105,10 +129,7 @@ def get_unread_count(db: Session, user_id: str) -> int:
         
     Requirements: 13.6
     """
-    return db.query(Notification).filter(
-        Notification.user_id == user_id,
-        Notification.is_read == False
-    ).count()
+    return _build_unread_query(db, user_id).count()
 
 
 def get_unread_count_by_type(
@@ -116,15 +137,39 @@ def get_unread_count_by_type(
     user_id: str,
     notification_type: Optional[str] = None
 ) -> int:
-    query = db.query(Notification).filter(
+    return _build_unread_query(db, user_id, notification_type).count()
+
+
+def get_unread_summary(db: Session, user_id: str) -> Dict[str, Any]:
+    grouped_rows = db.query(
+        Notification.type,
+        func.count(Notification.id)
+    ).filter(
         Notification.user_id == user_id,
-        Notification.is_read == False
+        Notification.is_read.is_(False)
+    ).group_by(
+        Notification.type
+    ).all()
+
+    unread_by_type = {
+        notification_type: 0
+        for notification_type in VALID_NOTIFICATION_TYPES
+    }
+
+    for notification_type, unread_count in grouped_rows:
+        unread_by_type[str(notification_type)] = int(unread_count)
+
+    unread_count = sum(unread_by_type.values())
+    unread_couple_count = sum(
+        unread_by_type.get(notification_type, 0)
+        for notification_type in COUPLE_NOTIFICATION_TYPES
     )
 
-    if notification_type:
-        query = query.filter(Notification.type == notification_type)
-
-    return query.count()
+    return {
+        "unread_count": unread_count,
+        "unread_by_type": unread_by_type,
+        "unread_couple_count": unread_couple_count,
+    }
 
 
 def mark_as_read(db: Session, notification: Notification, user_id: str) -> Notification:
@@ -170,13 +215,7 @@ def mark_all_as_read(db: Session, user_id: str, notification_type: Optional[str]
         
     Requirements: 13.5
     """
-    query = db.query(Notification).filter(
-        Notification.user_id == user_id,
-        Notification.is_read == False
-    )
-
-    if notification_type:
-        query = query.filter(Notification.type == notification_type)
+    query = _build_unread_query(db, user_id, notification_type)
 
     result = query.update({"is_read": True})
     

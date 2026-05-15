@@ -16,7 +16,7 @@ from app.schemas.wallet import WalletInfo
 class LoginRequest(BaseModel):
     """Request schema for WeChat login."""
     code: str = Field(..., description="微信登录code")
-    role: str = Field(default="foodie", description="用户角色: foodie 或 chef")
+    role: Optional[str] = Field(default=None, description="用户角色: foodie 或 chef，新用户必填")
     
     model_config = ConfigDict(
         json_schema_extra={
@@ -32,7 +32,7 @@ class AccountLoginRequest(BaseModel):
     """Request schema for account-password login."""
     account: str = Field(..., description="用户账号")
     password: str = Field(..., description="用户密码（当前不校验）")
-    role: str = Field(default="foodie", description="用户角色: foodie 或 chef")
+    role: Optional[str] = Field(default=None, description="用户角色: foodie 或 chef，新用户必填")
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -108,6 +108,14 @@ class LoginResponse(BaseModel):
     """Response schema for login endpoint."""
     token: str
     user: UserInfo
+
+
+class LoginPendingResponse(BaseModel):
+    """Response schema for pending login flow that still requires role selection."""
+    login_ticket: str
+    existing_user: bool = False
+    suggested_role: Optional[str] = None
+    message: Optional[str] = None
 
 
 # ============ User Profile Schemas ============

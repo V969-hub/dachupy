@@ -23,7 +23,7 @@ class OrderCreate(BaseModel):
     delivery_time: datetime = Field(..., description="配送时间")
     address_id: str = Field(..., description="地址ID")
     remarks: Optional[str] = Field(None, max_length=500, description="备注")
-    payment_method: str = Field(default="wechat", description="支付方式：wechat / virtual_coin")
+    payment_method: str = Field(default="virtual_coin", description="支付方式：virtual_coin")
     
     @field_validator('delivery_time')
     @classmethod
@@ -35,23 +35,23 @@ class OrderCreate(BaseModel):
     @field_validator("payment_method")
     @classmethod
     def validate_payment_method(cls, v: str):
-        normalized = (v or "wechat").strip().lower()
-        if normalized not in {"wechat", "virtual_coin"}:
-            raise ValueError("支付方式仅支持 wechat 或 virtual_coin")
+        normalized = (v or "virtual_coin").strip().lower()
+        if normalized != "virtual_coin":
+            raise ValueError("当前仅支持 virtual_coin 支付")
         return normalized
 
 
 class OrderPayRequest(BaseModel):
     """订单继续支付请求。"""
 
-    payment_method: str = Field(default="wechat", description="支付方式：wechat / virtual_coin")
+    payment_method: str = Field(default="virtual_coin", description="支付方式：virtual_coin")
 
     @field_validator("payment_method")
     @classmethod
     def validate_payment_method(cls, v: str):
-        normalized = (v or "wechat").strip().lower()
-        if normalized not in {"wechat", "virtual_coin"}:
-            raise ValueError("支付方式仅支持 wechat 或 virtual_coin")
+        normalized = (v or "virtual_coin").strip().lower()
+        if normalized != "virtual_coin":
+            raise ValueError("当前仅支持 virtual_coin 支付")
         return normalized
 
 
@@ -154,11 +154,11 @@ class OrderCreateResponse(BaseModel):
     order_status: str
     payment_method: str
     wallet_balance: Optional[float] = None
-    payment_params: Optional[dict] = None  # 微信支付参数
+    payment_params: Optional[dict] = None
 
 
 class PaymentParams(BaseModel):
-    """微信支付参数"""
+    """历史支付参数"""
     timeStamp: str
     nonceStr: str
     package: str

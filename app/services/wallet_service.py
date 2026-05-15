@@ -17,7 +17,7 @@ VIRTUAL_CURRENCY_DISPLAY_NAME = "虚拟币"
 PAYMENT_METHOD_FREE = "free"
 PAYMENT_METHOD_WECHAT = "wechat"
 PAYMENT_METHOD_VIRTUAL_COIN = "virtual_coin"
-SUPPORTED_PAYMENT_METHODS = {PAYMENT_METHOD_WECHAT, PAYMENT_METHOD_VIRTUAL_COIN}
+SUPPORTED_PAYMENT_METHODS = {PAYMENT_METHOD_VIRTUAL_COIN}
 
 
 class WalletServiceError(Exception):
@@ -58,9 +58,9 @@ def resolve_payment_method(value: Optional[str], total_price: Decimal | int | fl
     if amount <= Decimal("0.00"):
         return PAYMENT_METHOD_FREE
 
-    normalized = (value or PAYMENT_METHOD_WECHAT).strip().lower()
+    normalized = (value or PAYMENT_METHOD_VIRTUAL_COIN).strip().lower()
     if normalized not in SUPPORTED_PAYMENT_METHODS:
-        raise WalletServiceError("不支持的支付方式")
+        raise WalletServiceError("当前仅支持虚拟币支付")
     return normalized
 
 

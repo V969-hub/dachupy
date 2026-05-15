@@ -11,15 +11,16 @@ from typing import Optional
 from decimal import Decimal
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.middleware.auth import get_current_user
+from app.middleware.auth import get_current_user, require_foodie
 from app.services.tip_service import TipService, TipServiceError
-from app.services.payment_service import PaymentService, PaymentServiceError
+from app.services.wallet_service import build_wallet_payload
 from app.schemas.common import success_response, error_response, paginated_response
+from app.models.user import User
 
 
 logger = logging.getLogger(__name__)
@@ -54,68 +55,40 @@ class TipResponse(BaseModel):
 
 @router.post("")
 async def create_tip(
-    request: Request,
     tip_data: CreateTipRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(require_foodie),
     db: Session = Depends(get_db)
 ):
     """
     创建打赏
     
-    创建打赏记录并发起微信支付。
+    创建打赏记录并直接完成餐币扣款。
     
     Requirements: 10.1
     """
     try:
         tip_service = TipService(db)
-        
-        # 创建打赏记录
-        tip = tip_service.create_tip(
-            foodie_id=current_user["user_id"],
+        tip = tip_service.create_tip_with_virtual_coin_payment(
+            foodie_id=current_user.id,
             chef_id=tip_data.chef_id,
             amount=tip_data.amount,
             message=tip_data.message,
             order_id=tip_data.order_id
         )
         
-        # 获取用户openid用于支付
-        from app.models.user import User
-        user = db.query(User).filter(User.id == current_user["user_id"]).first()
-        
-        if not user:
-            raise HTTPException(status_code=404, detail="用户不存在")
-        
-        # 创建支付
-        payment_service = PaymentService(db)
-        
-        # 构建回调URL
-        base_url = str(request.base_url).rstrip("/")
-        notify_url = f"{base_url}/api/payment/tip-notify"
-        
-        # 获取客户端IP
-        client_ip = request.client.host if request.client else "127.0.0.1"
-        
-        payment_result = await payment_service.create_tip_payment(
-            tip_id=tip.id,
-            openid=user.open_id,
-            notify_url=notify_url,
-            client_ip=client_ip
-        )
-        
         return success_response(
             data={
                 "tip_id": tip.id,
                 "amount": float(tip.amount),
-                "payment_params": payment_result.get("payment_params")
+                "status": tip.status,
+                "wallet_balance": build_wallet_payload(current_user)["balance"],
+                "payment_params": None
             },
-            message="打赏创建成功"
+            message="打赏已使用餐币完成"
         )
         
     except TipServiceError as e:
         logger.error(f"创建打赏失败: {e.message}")
-        return error_response(code=e.code, message=e.message)
-    except PaymentServiceError as e:
-        logger.error(f"创建打赏支付失败: {e.message}")
         return error_response(code=e.code, message=e.message)
     except Exception as e:
         logger.error(f"创建打赏异常: {str(e)}", exc_info=True)
@@ -128,7 +101,7 @@ async def get_tips(
     page_size: int = Query(10, ge=1, le=50, description="每页数量"),
     status: Optional[str] = Query(None, description="状态筛选: pending/paid/failed"),
     role: Optional[str] = Query(None, description="角色视角: foodie/chef"),
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -202,7 +175,7 @@ async def get_tips(
 
 @router.get("/statistics")
 async def get_tip_statistics(
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -212,11 +185,11 @@ async def get_tip_statistics(
     """
     try:
         # 验证是大厨角色
-        if current_user.get("role") != "chef":
+        if current_user.role != "chef":
             return error_response(code=403, message="仅大厨可查看打赏统计")
         
         tip_service = TipService(db)
-        statistics = tip_service.get_chef_tip_statistics(current_user["user_id"])
+        statistics = tip_service.get_chef_tip_statistics(current_user.id)
         
         return success_response(data=statistics)
         
@@ -228,7 +201,7 @@ async def get_tip_statistics(
 @router.get("/{tip_id}")
 async def get_tip_detail(
     tip_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -244,7 +217,7 @@ async def get_tip_detail(
             return error_response(code=404, message="打赏记录不存在")
         
         # 验证权限：只有打赏者或被打赏者可以查看
-        if tip.foodie_id != current_user["user_id"] and tip.chef_id != current_user["user_id"]:
+        if tip.foodie_id != current_user.id and tip.chef_id != current_user.id:
             return error_response(code=403, message="无权查看此打赏记录")
         
         tip_data = {

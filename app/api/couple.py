@@ -1,6 +1,8 @@
 """
 情侣备忘录 MVP 接口。
 """
+from datetime import date as date_type
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
@@ -10,6 +12,7 @@ from app.models.user import User
 from app.schemas.common import success_response, error_response
 from app.schemas.couple import (
     BindCoupleRequest,
+    CoupleDailyMemorySaveRequest,
     CoupleMemoCreateRequest,
     CoupleMemoUpdateRequest,
     CoupleMemoStatusRequest,
@@ -85,7 +88,14 @@ from app.services.couple_service import (
     list_date_draws,
     accept_date_draw,
     update_date_draw_status,
+    delete_date_draw,
     date_draw_to_dict,
+    get_couple_ledger,
+    get_couple_report,
+    get_calendar_month,
+    get_calendar_day,
+    save_daily_memory,
+    delete_daily_memory,
 )
 
 
@@ -159,6 +169,109 @@ async def dashboard(
         return error_response(e.code, e.message)
     except Exception as e:
         return error_response(500, f"获取情侣首页失败: {str(e)}")
+
+
+@router.get("/calendar/month")
+async def couple_calendar_month(
+    month: str = Query(..., description="月份，格式 YYYY-MM"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        data = get_calendar_month(db, current_user, month)
+        return success_response(data=data)
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"获取情侣月历失败: {str(e)}")
+
+
+@router.get("/calendar/day")
+async def couple_calendar_day(
+    date: date_type = Query(..., description="日期，格式 YYYY-MM-DD"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        data = get_calendar_day(db, current_user, date)
+        return success_response(data=data)
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"获取当天故事失败: {str(e)}")
+
+
+@router.put("/calendar/day/memory")
+async def upsert_couple_daily_memory(
+    request: CoupleDailyMemorySaveRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        memory = save_daily_memory(
+            db,
+            relationship,
+            current_user,
+            request.date,
+            request.images,
+            request.content,
+            request.mood,
+        )
+        return success_response(
+            data=get_calendar_day(db, current_user, request.date),
+            message="当天记忆已保存" if memory else "当天记忆已清空",
+        )
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"保存当天记忆失败: {str(e)}")
+
+
+@router.delete("/calendar/day/memory")
+async def remove_couple_daily_memory(
+    date: date_type = Query(..., description="日期，格式 YYYY-MM-DD"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        delete_daily_memory(db, relationship, date)
+        return success_response(message="当天记忆已删除")
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"删除当天记忆失败: {str(e)}")
+
+
+@router.get("/ledger")
+async def couple_ledger(
+    period: str = Query("all", description="账本范围：all/week/month"),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=50, description="每页数量"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        return success_response(data=get_couple_ledger(db, current_user, period, page, page_size))
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"获取情侣消费账本失败: {str(e)}")
+
+
+@router.get("/reports")
+async def couple_reports(
+    period: str = Query("week", description="报告范围：week/month"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        return success_response(data=get_couple_report(db, current_user, period))
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"获取情侣报告失败: {str(e)}")
 
 
 @router.get("/memos")
@@ -568,6 +681,22 @@ async def couple_update_date_draw_status(
         return error_response(e.code, e.message)
     except Exception as e:
         return error_response(500, f"更新抽卡状态失败: {str(e)}")
+
+
+@router.delete("/date-draws/{draw_id}")
+async def remove_couple_date_draw(
+    draw_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        relationship = require_relationship(db, current_user)
+        delete_date_draw(db, relationship, current_user, draw_id)
+        return success_response(message="删除成功")
+    except CoupleServiceError as e:
+        return error_response(e.code, e.message)
+    except Exception as e:
+        return error_response(500, f"删除抽卡记录失败: {str(e)}")
 
 
 @router.get("/restaurant/dashboard")

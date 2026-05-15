@@ -79,6 +79,29 @@ def create_admin_token(username: str, expires_delta: Optional[timedelta] = None)
     )
 
 
+def create_login_ticket(
+    identifier: str,
+    login_type: str,
+    expires_delta: Optional[timedelta] = None
+) -> str:
+    """
+    Create a short-lived login ticket for unfinished registration flows.
+
+    The ticket is used after we identify a login subject but still need the
+    client to choose a role before creating the account.
+    """
+    return create_token(
+        user_id=f"login:{login_type}:{identifier}",
+        role="login",
+        expires_delta=expires_delta or timedelta(minutes=10),
+        extra_claims={
+            "kind": "login_ticket",
+            "login_type": login_type,
+            "identifier": identifier,
+        }
+    )
+
+
 def verify_token(token: str) -> Optional[dict]:
     """
     Verify and decode a JWT token.
@@ -103,6 +126,20 @@ def verify_token(token: str) -> Optional[dict]:
         return payload
     except JWTError:
         return None
+
+
+def verify_login_ticket(token: str) -> Optional[dict]:
+    """
+    Verify that a token is a valid login ticket.
+    """
+    payload = verify_token(token)
+    if payload is None:
+        return None
+    if payload.get("role") != "login" or payload.get("kind") != "login_ticket":
+        return None
+    if not payload.get("login_type") or not payload.get("identifier"):
+        return None
+    return payload
 
 
 def verify_admin_token(token: str) -> Optional[dict]:

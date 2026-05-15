@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, aliased
 from app.config import settings
 from app.database import get_db
 from app.middleware.admin_auth import require_admin
-from app.models.admin import AdminBroadcast
+from app.models.admin import AdminBroadcast, AdminOperationLog
 from app.models.binding import Binding
 from app.models.couple import (
     CoupleAnniversary,
@@ -21,6 +21,7 @@ from app.models.couple import (
     CoupleDateDraw,
     CoupleMemo,
     CoupleRelationship,
+    CoupleRestaurantCategory,
     CoupleRestaurantItem,
     CoupleRestaurantWish,
 )
@@ -33,15 +34,38 @@ from app.models.user import User
 from app.models.wallet import WalletTransaction
 from app.schemas.admin import (
     AdminBroadcastCreateRequest,
+    AdminCoupleBindRequest,
     AdminDishUpdateRequest,
     AdminLoginRequest,
+    AdminOperationLogCreateRequest,
     AdminOrderStatusUpdateRequest,
     AdminRefundCreateRequest,
     AdminUserCreateRequest,
     AdminUserWalletTopUpRequest,
     AdminUserUpdateRequest,
 )
+from app.schemas.couple import (
+    CoupleRestaurantCategoryCreateRequest,
+    CoupleRestaurantCategoryUpdateRequest,
+    CoupleRestaurantItemCreateRequest,
+    CoupleRestaurantItemUpdateRequest,
+)
 from app.schemas.common import error_response, paginated_response, success_response
+from app.services.couple_service import (
+    CoupleServiceError,
+    create_restaurant_category,
+    create_restaurant_item,
+    delete_restaurant_category,
+    delete_restaurant_item,
+    ensure_couple_code,
+    get_active_relationship,
+    get_partner_from_relationship,
+    get_restaurant_dashboard,
+    restaurant_category_to_dict,
+    restaurant_item_to_dict,
+    update_restaurant_category,
+    update_restaurant_item,
+)
 from app.services.order_service import OrderService, OrderServiceError
 from app.services.wallet_service import WalletService, WalletServiceError
 from app.utils.security import create_admin_token, generate_binding_code
@@ -163,6 +187,78 @@ def _serialize_wallet_transaction(transaction: WalletTransaction) -> dict:
     }
 
 
+def _get_couple_relationship_or_none(db: Session, relationship_id: str) -> Optional[CoupleRelationship]:
+    return db.query(CoupleRelationship).filter(CoupleRelationship.id == relationship_id).first()
+
+
+def _get_couple_actor_user(relationship: CoupleRelationship) -> Optional[User]:
+    return relationship.user_a or relationship.user_b
+
+
+def _serialize_admin_couple_relationship(relationship: CoupleRelationship) -> dict:
+    user_a = relationship.user_a
+    user_b = relationship.user_b
+    return {
+        "id": relationship.id,
+        "status": relationship.status,
+        "anniversary_date": relationship.anniversary_date.isoformat() if relationship.anniversary_date else None,
+        "created_at": _serialize_datetime(relationship.created_at),
+        "updated_at": _serialize_datetime(relationship.updated_at),
+        "user_a": {
+            "id": relationship.user_a_id,
+            "nickname": user_a.nickname if user_a else None,
+            "phone": user_a.phone if user_a else None,
+        },
+        "user_b": {
+            "id": relationship.user_b_id,
+            "nickname": user_b.nickname if user_b else None,
+            "phone": user_b.phone if user_b else None,
+        },
+    }
+
+
+def _serialize_admin_couple_candidate(user: User, relationship: Optional[CoupleRelationship]) -> dict:
+    partner = get_partner_from_relationship(relationship, user.id) if relationship else None
+    return {
+        "id": user.id,
+        "nickname": user.nickname,
+        "phone": user.phone,
+        "role": user.role,
+        "couple_code": user.couple_code,
+        "created_at": _serialize_datetime(user.created_at),
+        "has_active_couple": relationship is not None,
+        "active_couple_relationship_id": relationship.id if relationship else None,
+        "active_partner": {
+            "id": partner.id,
+            "nickname": partner.nickname,
+            "phone": partner.phone,
+        } if partner else None,
+    }
+
+
+def _create_admin_operation_log(
+    db: Session,
+    admin: dict,
+    action_type: str,
+    target_type: str,
+    summary: str,
+    *,
+    target_id: Optional[str] = None,
+    detail: Optional[dict[str, Any]] = None,
+) -> AdminOperationLog:
+    log = AdminOperationLog(
+        operator_username=str(admin.get("username") or "admin"),
+        operator_name=str(admin.get("display_name") or admin.get("username") or "系统管理员"),
+        action_type=action_type,
+        target_type=target_type,
+        target_id=target_id,
+        summary=summary,
+        detail=detail,
+    )
+    db.add(log)
+    return log
+
+
 def _recalculate_order_refund_summary(order: Order) -> None:
     refunded_total = Decimal("0.00")
     latest_reason = None
@@ -265,8 +361,6 @@ async def admin_create_user(
     """
     Create a local/account-login compatible user from the admin console.
     """
-    del admin
-
     account = request.account.strip()
     role = request.role.strip()
 
@@ -292,6 +386,21 @@ async def admin_create_user(
         is_open=request.is_open if role == "chef" else True,
     )
     db.add(user)
+    db.flush()
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="create_user",
+        target_type="user",
+        target_id=user.id,
+        summary=f"创建{role}账号 {account}",
+        detail={
+            "account": account,
+            "role": role,
+            "nickname": nickname,
+            "phone": user.phone,
+        },
+    )
     db.commit()
     db.refresh(user)
 
@@ -455,6 +564,12 @@ async def admin_dashboard_overview(
         WalletTransaction.created_at.desc()
     ).limit(6).all()
 
+    recent_operation_logs = db.query(
+        AdminOperationLog
+    ).order_by(
+        AdminOperationLog.created_at.desc()
+    ).limit(6).all()
+
     return success_response(
         data={
             "headline": {
@@ -528,6 +643,20 @@ async def admin_dashboard_overview(
                     "created_at": _serialize_datetime(transaction.created_at),
                 }
                 for transaction, nickname, role in recent_wallet_transactions
+            ],
+            "recent_operation_logs": [
+                {
+                    "id": item.id,
+                    "operator_username": item.operator_username,
+                    "operator_name": item.operator_name,
+                    "action_type": item.action_type,
+                    "target_type": item.target_type,
+                    "target_id": item.target_id,
+                    "summary": item.summary,
+                    "detail": item.detail,
+                    "created_at": _serialize_datetime(item.created_at),
+                }
+                for item in recent_operation_logs
             ],
         }
     )
@@ -760,8 +889,6 @@ async def admin_update_user(
     """
     Update a subset of user management fields.
     """
-    del admin
-
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         return error_response(404, "用户不存在")
@@ -770,6 +897,15 @@ async def admin_update_user(
     for field, value in payload.items():
         setattr(user, field, value)
 
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="update_user",
+        target_type="user",
+        target_id=user.id,
+        summary=f"更新用户 {user.nickname or user.id}",
+        detail=payload,
+    )
     db.commit()
     db.refresh(user)
 
@@ -842,6 +978,19 @@ async def admin_top_up_user_wallet(
             amount=request.amount,
             transaction_type="admin_topup",
             note=transaction_note,
+        )
+        _create_admin_operation_log(
+            db,
+            admin,
+            action_type="wallet_topup",
+            target_type="user_wallet",
+            target_id=user.id,
+            summary=f"给用户 {user.nickname or user.id} 增加餐币",
+            detail={
+                "amount": _serialize_decimal(request.amount),
+                "note": normalized_note or None,
+                "balance_after": _serialize_decimal(user.virtual_coin_balance),
+            },
         )
         db.commit()
         db.refresh(user)
@@ -946,8 +1095,6 @@ async def admin_update_dish(
     """
     Update dish availability fields.
     """
-    del admin
-
     dish = db.query(Dish).filter(Dish.id == dish_id).first()
     if not dish:
         return error_response(404, "菜品不存在")
@@ -956,6 +1103,15 @@ async def admin_update_dish(
     for field, value in payload.items():
         setattr(dish, field, value)
 
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="update_dish",
+        target_type="dish",
+        target_id=dish.id,
+        summary=f"更新菜品 {dish.name}",
+        detail=payload,
+    )
     db.commit()
     db.refresh(dish)
 
@@ -1131,8 +1287,6 @@ async def admin_update_order_status(
     """
     Update order status from the admin console.
     """
-    del admin
-
     if request.status not in ORDER_STATUSES:
         return error_response(400, "不支持的订单状态")
 
@@ -1145,6 +1299,22 @@ async def admin_update_order_status(
         )
     except OrderServiceError as exc:
         return error_response(exc.code, exc.message)
+
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="update_order_status",
+        target_type="order",
+        target_id=order.id,
+        summary=f"更新订单 {order.order_no} 状态为 {order.status}",
+        detail={
+            "status": order.status,
+            "cancel_reason": order.cancel_reason,
+            "completed_at": _serialize_datetime(order.completed_at),
+        },
+    )
+    db.commit()
+    db.refresh(order)
 
     return success_response(
         data={
@@ -1254,6 +1424,20 @@ async def admin_create_order_refund(
         data={"source": "admin_refund", "order_id": order.id, "refund_id": refund.id}
     ))
 
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="create_order_refund",
+        target_type="order",
+        target_id=order.id,
+        summary=f"为订单 {order.order_no} 创建退款记录",
+        detail={
+            "refund_amount": _serialize_decimal(refund_amount),
+            "refund_method": refund_method,
+            "reason": request.reason.strip(),
+            "mark_manual_processed": request.mark_manual_processed,
+        },
+    )
     db.commit()
     db.refresh(order)
     db.refresh(refund)
@@ -1318,8 +1502,6 @@ async def admin_create_broadcast(
         recipients_query = recipients_query.filter(User.virtual_coin_balance <= max_wallet_balance)
 
     recipients = recipients_query.all()
-    if not recipients:
-        return error_response(404, "没有找到可接收通知的用户")
 
     created_by = str(admin.get("display_name") or admin.get("username") or "admin")
     broadcast = AdminBroadcast(
@@ -1370,6 +1552,20 @@ async def admin_create_broadcast(
                 note=f"广播活动奖励：{broadcast.title}，操作人：{created_by}",
             )
 
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="create_broadcast",
+        target_type="broadcast",
+        target_id=broadcast.id,
+        summary=f"发送广播 {broadcast.title}",
+        detail={
+            "target_role": target_role,
+            "recipient_count": len(recipients),
+            "reward_amount": _serialize_decimal(reward_amount),
+            "filters": _normalize_broadcast_filters(broadcast.filters),
+        },
+    )
     db.commit()
     db.refresh(broadcast)
 
@@ -1385,7 +1581,13 @@ async def admin_create_broadcast(
             "created_by": broadcast.created_by,
             "created_at": _serialize_datetime(broadcast.created_at),
         },
-        message="系统通知已群发" if reward_amount <= Decimal("0.00") else "系统通知已群发，餐币奖励已发放"
+        message=(
+            "系统通知已创建，当前没有命中用户"
+            if not recipients
+            else "系统通知已群发"
+            if reward_amount <= Decimal("0.00")
+            else "系统通知已群发，餐币奖励已发放"
+        )
     )
 
 
@@ -1418,6 +1620,97 @@ async def admin_list_broadcasts(
                 "created_by": item.created_by,
                 "filters": _normalize_broadcast_filters(item.filters),
                 "note": item.note,
+                "created_at": _serialize_datetime(item.created_at),
+            }
+            for item in rows
+        ],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
+
+
+@router.post("/operation-logs")
+async def admin_create_operation_log(
+    request: AdminOperationLogCreateRequest,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Create an explicit admin operation log entry.
+    """
+    log = _create_admin_operation_log(
+        db,
+        admin,
+        action_type=request.action_type.strip(),
+        target_type=request.target_type.strip(),
+        target_id=(request.target_id or "").strip() or None,
+        summary=request.summary.strip(),
+        detail=request.detail,
+    )
+    db.commit()
+    db.refresh(log)
+
+    return success_response(
+        data={
+            "id": log.id,
+            "action_type": log.action_type,
+            "target_type": log.target_type,
+            "target_id": log.target_id,
+            "summary": log.summary,
+            "created_at": _serialize_datetime(log.created_at),
+        },
+        message="操作日志已记录"
+    )
+
+
+@router.get("/operation-logs")
+async def admin_list_operation_logs(
+    search: Optional[str] = Query(None, description="按操作摘要、操作账号搜索"),
+    action_type: Optional[str] = Query(None, description="按操作类型筛选"),
+    target_type: Optional[str] = Query(None, description="按目标类型筛选"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(12, ge=1, le=100),
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Paginated admin operation audit log.
+    """
+    del admin
+
+    query = db.query(AdminOperationLog)
+
+    if search:
+        keyword = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                AdminOperationLog.summary.like(keyword),
+                AdminOperationLog.operator_username.like(keyword),
+                AdminOperationLog.operator_name.like(keyword),
+            )
+        )
+    if action_type:
+        query = query.filter(AdminOperationLog.action_type == action_type)
+    if target_type:
+        query = query.filter(AdminOperationLog.target_type == target_type)
+
+    total = query.count()
+    rows = query.order_by(AdminOperationLog.created_at.desc()).offset(
+        (page - 1) * page_size
+    ).limit(page_size).all()
+
+    return paginated_response(
+        data=[
+            {
+                "id": item.id,
+                "operator_username": item.operator_username,
+                "operator_name": item.operator_name,
+                "action_type": item.action_type,
+                "target_type": item.target_type,
+                "target_id": item.target_id,
+                "summary": item.summary,
+                "detail": item.detail,
                 "created_at": _serialize_datetime(item.created_at),
             }
             for item in rows
@@ -1635,3 +1928,569 @@ async def admin_list_couples(
         page_size=page_size,
         total=total,
     )
+
+
+@router.get("/couples/candidates")
+async def admin_list_couple_candidates(
+    search: Optional[str] = Query(None, description="昵称/手机号/open_id/情侣码搜索"),
+    exclude_user_id: Optional[str] = Query(None, description="需要排除的用户ID"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(8, ge=1, le=20),
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Search users that can be selected for a manual couple bind action.
+    """
+    del admin
+
+    query = db.query(User).filter(User.is_deleted == False)
+
+    if search:
+        keyword = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                User.nickname.like(keyword),
+                User.phone.like(keyword),
+                User.open_id.like(keyword),
+                User.couple_code.like(keyword),
+            )
+        )
+    if exclude_user_id:
+        query = query.filter(User.id != exclude_user_id)
+
+    total = query.count()
+    rows = query.order_by(User.created_at.desc()).offset(
+        (page - 1) * page_size
+    ).limit(page_size).all()
+
+    return paginated_response(
+        data=[
+            _serialize_admin_couple_candidate(user, get_active_relationship(db, user.id))
+            for user in rows
+        ],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
+
+
+@router.post("/couples/bind")
+async def admin_bind_couple(
+    request: AdminCoupleBindRequest,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Manually create a couple relationship from the admin console.
+    """
+    user_a_id = request.user_a_id.strip()
+    user_b_id = request.user_b_id.strip()
+
+    if user_a_id == user_b_id:
+        return error_response(400, "不能把同一个用户绑定成情侣")
+
+    user_a = db.query(User).filter(
+        User.id == user_a_id,
+        User.is_deleted == False,
+    ).first()
+    if not user_a:
+        return error_response(404, "用户A不存在")
+
+    user_b = db.query(User).filter(
+        User.id == user_b_id,
+        User.is_deleted == False,
+    ).first()
+    if not user_b:
+        return error_response(404, "用户B不存在")
+
+    relationship_a = get_active_relationship(db, user_a.id)
+    if relationship_a:
+        partner = get_partner_from_relationship(relationship_a, user_a.id)
+        return error_response(
+            400,
+            f"{user_a.nickname or '用户A'} 已绑定 {partner.nickname or '其他用户'}，请先解绑",
+        )
+
+    relationship_b = get_active_relationship(db, user_b.id)
+    if relationship_b:
+        partner = get_partner_from_relationship(relationship_b, user_b.id)
+        return error_response(
+            400,
+            f"{user_b.nickname or '用户B'} 已绑定 {partner.nickname or '其他用户'}，请先解绑",
+        )
+
+    ensure_couple_code(db, user_a)
+    ensure_couple_code(db, user_b)
+
+    relationship = CoupleRelationship(
+        user_a_id=user_a.id,
+        user_b_id=user_b.id,
+        anniversary_date=request.anniversary_date or date.today(),
+        status="active",
+    )
+    db.add(relationship)
+    db.flush()
+
+    notice_data = {
+        "kind": "couple_bind",
+        "source": "admin",
+        "relationship_id": relationship.id,
+    }
+    partner_a_name = user_b.nickname or "对方"
+    partner_b_name = user_a.nickname or "对方"
+    db.add(Notification(
+        id=str(uuid.uuid4()),
+        user_id=user_a.id,
+        type="couple_bind",
+        title="情侣关系已建立",
+        content=f"后台已为你和 {partner_a_name} 建立情侣关系，如有疑问请联系平台客服",
+        data=notice_data,
+    ))
+    db.add(Notification(
+        id=str(uuid.uuid4()),
+        user_id=user_b.id,
+        type="couple_bind",
+        title="情侣关系已建立",
+        content=f"后台已为你和 {partner_b_name} 建立情侣关系，如有疑问请联系平台客服",
+        data=notice_data,
+    ))
+
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="bind_couple",
+        target_type="couple_relationship",
+        target_id=relationship.id,
+        summary=f"手动绑定情侣关系 {user_a.nickname or user_a.id} / {user_b.nickname or user_b.id}",
+        detail={
+            "relationship_id": relationship.id,
+            "user_a_id": user_a.id,
+            "user_b_id": user_b.id,
+            "anniversary_date": relationship.anniversary_date.isoformat() if relationship.anniversary_date else None,
+        },
+    )
+    db.commit()
+    db.refresh(relationship)
+
+    return success_response(
+        data=_serialize_admin_couple_relationship(relationship),
+        message="情侣关系已手动绑定",
+    )
+
+
+@router.post("/couples/{relationship_id}/unbind")
+async def admin_unbind_couple(
+    relationship_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Manually deactivate an active couple relationship from the admin console.
+    """
+    relationship = _get_couple_relationship_or_none(db, relationship_id)
+    if not relationship:
+        return error_response(404, "情侣关系不存在")
+
+    if relationship.status != "active":
+        return error_response(400, "该情侣关系已经解绑")
+
+    operator_name = str(admin.get("display_name") or admin.get("username") or "系统管理员")
+    relationship.status = "inactive"
+
+    notice_data = {
+        "kind": "couple_unbind",
+        "source": "admin",
+        "relationship_id": relationship.id,
+    }
+    db.add(Notification(
+        id=str(uuid.uuid4()),
+        user_id=relationship.user_a_id,
+        type="couple_bind",
+        title="情侣关系已解绑",
+        content="后台已手动解除你当前的情侣关系，如有疑问请联系平台客服",
+        data=notice_data,
+    ))
+    db.add(Notification(
+        id=str(uuid.uuid4()),
+        user_id=relationship.user_b_id,
+        type="couple_bind",
+        title="情侣关系已解绑",
+        content="后台已手动解除你当前的情侣关系，如有疑问请联系平台客服",
+        data=notice_data,
+    ))
+
+    user_a_name = relationship.user_a.nickname if relationship.user_a else relationship.user_a_id
+    user_b_name = relationship.user_b.nickname if relationship.user_b else relationship.user_b_id
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="unbind_couple",
+        target_type="couple_relationship",
+        target_id=relationship.id,
+        summary=f"手动解绑情侣关系 {user_a_name} / {user_b_name}",
+        detail={
+            "relationship_id": relationship.id,
+            "user_a_id": relationship.user_a_id,
+            "user_b_id": relationship.user_b_id,
+            "operator_name": operator_name,
+        },
+    )
+    db.commit()
+    db.refresh(relationship)
+
+    return success_response(
+        data={
+            "id": relationship.id,
+            "status": relationship.status,
+            "updated_at": _serialize_datetime(relationship.updated_at),
+        },
+        message="情侣关系已手动解绑",
+    )
+
+
+@router.get("/couples/{relationship_id}/restaurant")
+async def admin_get_couple_restaurant_dashboard(
+    relationship_id: str,
+    keyword: Optional[str] = Query(None, description="按菜单名/描述/标签搜索"),
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Load the shared restaurant menu workspace for one couple relationship.
+    """
+    del admin
+
+    relationship = _get_couple_relationship_or_none(db, relationship_id)
+    if not relationship:
+        return error_response(404, "情侣关系不存在")
+
+    try:
+        payload = get_restaurant_dashboard(db, relationship, keyword=keyword)
+    except CoupleServiceError as exc:
+        return error_response(exc.code, exc.message)
+
+    return success_response(
+        data={
+            "relationship": _serialize_admin_couple_relationship(relationship),
+            "categories": payload["categories"],
+            "items": payload["items"],
+            "total_categories": len(payload["categories"]),
+            "total_items": payload["total_items"],
+            "wish_count": payload["wish_count"],
+        }
+    )
+
+
+@router.post("/couples/{relationship_id}/restaurant/categories")
+async def admin_create_couple_restaurant_category(
+    relationship_id: str,
+    request: CoupleRestaurantCategoryCreateRequest,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Create a couple menu category from the admin console.
+    """
+    relationship = _get_couple_relationship_or_none(db, relationship_id)
+    if not relationship:
+        return error_response(404, "情侣关系不存在")
+
+    actor = _get_couple_actor_user(relationship)
+    if not actor:
+        return error_response(404, "情侣关系对应用户不存在")
+
+    try:
+        category = create_restaurant_category(
+            db,
+            relationship,
+            actor,
+            request.name,
+            request.image,
+            request.sort_order,
+        )
+    except CoupleServiceError as exc:
+        return error_response(exc.code, exc.message)
+
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="create_couple_menu_category",
+        target_type="couple_menu_category",
+        target_id=category.id,
+        summary=f"新增情侣菜单分类 {category.name}",
+        detail={
+            "relationship_id": relationship.id,
+            "name": category.name,
+            "sort_order": category.sort_order,
+        },
+    )
+    db.commit()
+
+    return success_response(
+        data=restaurant_category_to_dict(db, category),
+        message="菜单分类已创建",
+    )
+
+
+@router.put("/couples/{relationship_id}/restaurant/categories/{category_id}")
+async def admin_update_couple_restaurant_category(
+    relationship_id: str,
+    category_id: str,
+    request: CoupleRestaurantCategoryUpdateRequest,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Update a couple menu category from the admin console.
+    """
+    relationship = _get_couple_relationship_or_none(db, relationship_id)
+    if not relationship:
+        return error_response(404, "情侣关系不存在")
+
+    try:
+        category = update_restaurant_category(
+            db,
+            relationship,
+            category_id,
+            name=request.name,
+            image=request.image,
+            sort_order=request.sort_order,
+            image_provided="image" in request.model_fields_set,
+        )
+    except CoupleServiceError as exc:
+        return error_response(exc.code, exc.message)
+
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="update_couple_menu_category",
+        target_type="couple_menu_category",
+        target_id=category.id,
+        summary=f"更新情侣菜单分类 {category.name}",
+        detail={
+            "relationship_id": relationship.id,
+            "name": category.name,
+            "image": category.image,
+            "sort_order": category.sort_order,
+        },
+    )
+    db.commit()
+
+    return success_response(
+        data=restaurant_category_to_dict(db, category),
+        message="菜单分类已更新",
+    )
+
+
+@router.delete("/couples/{relationship_id}/restaurant/categories/{category_id}")
+async def admin_delete_couple_restaurant_category(
+    relationship_id: str,
+    category_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Delete a couple menu category from the admin console.
+    """
+    relationship = _get_couple_relationship_or_none(db, relationship_id)
+    if not relationship:
+        return error_response(404, "情侣关系不存在")
+
+    category = db.query(CoupleRestaurantCategory).filter(
+        CoupleRestaurantCategory.id == category_id,
+        CoupleRestaurantCategory.relationship_id == relationship.id,
+    ).first()
+    if not category:
+        return error_response(404, "菜单分类不存在")
+
+    snapshot = {
+        "id": category.id,
+        "name": category.name,
+        "sort_order": category.sort_order,
+    }
+
+    try:
+        delete_restaurant_category(db, relationship, category_id)
+    except CoupleServiceError as exc:
+        return error_response(exc.code, exc.message)
+
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="delete_couple_menu_category",
+        target_type="couple_menu_category",
+        target_id=snapshot["id"],
+        summary=f"删除情侣菜单分类 {snapshot['name']}",
+        detail={
+            "relationship_id": relationship.id,
+            "name": snapshot["name"],
+            "sort_order": snapshot["sort_order"],
+        },
+    )
+    db.commit()
+
+    return success_response(message="菜单分类已删除")
+
+
+@router.post("/couples/{relationship_id}/restaurant/items")
+async def admin_create_couple_restaurant_item(
+    relationship_id: str,
+    request: CoupleRestaurantItemCreateRequest,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Create a couple menu item from the admin console.
+    """
+    relationship = _get_couple_relationship_or_none(db, relationship_id)
+    if not relationship:
+        return error_response(404, "情侣关系不存在")
+
+    actor = _get_couple_actor_user(relationship)
+    if not actor:
+        return error_response(404, "情侣关系对应用户不存在")
+
+    try:
+        item = create_restaurant_item(
+            db,
+            relationship,
+            actor,
+            request.category_id,
+            request.name,
+            request.price,
+            request.images,
+            request.tags,
+            request.description,
+        )
+    except CoupleServiceError as exc:
+        return error_response(exc.code, exc.message)
+
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="create_couple_menu_item",
+        target_type="couple_menu_item",
+        target_id=item.id,
+        summary=f"新增情侣菜单 {item.name}",
+        detail={
+            "relationship_id": relationship.id,
+            "category_id": item.category_id,
+            "name": item.name,
+            "price": _serialize_decimal(item.price),
+        },
+    )
+    db.commit()
+
+    return success_response(
+        data=restaurant_item_to_dict(item),
+        message="菜单已创建",
+    )
+
+
+@router.put("/couples/{relationship_id}/restaurant/items/{item_id}")
+async def admin_update_couple_restaurant_item(
+    relationship_id: str,
+    item_id: str,
+    request: CoupleRestaurantItemUpdateRequest,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Update a couple menu item from the admin console.
+    """
+    relationship = _get_couple_relationship_or_none(db, relationship_id)
+    if not relationship:
+        return error_response(404, "情侣关系不存在")
+
+    try:
+        item = update_restaurant_item(
+            db,
+            relationship,
+            item_id,
+            category_id=request.category_id,
+            name=request.name,
+            price=request.price,
+            images=request.images,
+            tags=request.tags,
+            description=request.description,
+            description_provided="description" in request.model_fields_set,
+            images_provided="images" in request.model_fields_set,
+            tags_provided="tags" in request.model_fields_set,
+        )
+    except CoupleServiceError as exc:
+        return error_response(exc.code, exc.message)
+
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="update_couple_menu_item",
+        target_type="couple_menu_item",
+        target_id=item.id,
+        summary=f"更新情侣菜单 {item.name}",
+        detail={
+            "relationship_id": relationship.id,
+            "category_id": item.category_id,
+            "name": item.name,
+            "price": _serialize_decimal(item.price),
+            "images_count": len(item.images or []),
+            "tags": item.tags or [],
+        },
+    )
+    db.commit()
+
+    return success_response(
+        data=restaurant_item_to_dict(item),
+        message="菜单已更新",
+    )
+
+
+@router.delete("/couples/{relationship_id}/restaurant/items/{item_id}")
+async def admin_delete_couple_restaurant_item(
+    relationship_id: str,
+    item_id: str,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    """
+    Delete a couple menu item from the admin console.
+    """
+    relationship = _get_couple_relationship_or_none(db, relationship_id)
+    if not relationship:
+        return error_response(404, "情侣关系不存在")
+
+    item = db.query(CoupleRestaurantItem).filter(
+        CoupleRestaurantItem.id == item_id,
+        CoupleRestaurantItem.relationship_id == relationship.id,
+    ).first()
+    if not item:
+        return error_response(404, "菜单不存在")
+
+    snapshot = {
+        "id": item.id,
+        "category_id": item.category_id,
+        "name": item.name,
+        "price": _serialize_decimal(item.price),
+    }
+
+    try:
+        delete_restaurant_item(db, relationship, item_id)
+    except CoupleServiceError as exc:
+        return error_response(exc.code, exc.message)
+
+    _create_admin_operation_log(
+        db,
+        admin,
+        action_type="delete_couple_menu_item",
+        target_type="couple_menu_item",
+        target_id=snapshot["id"],
+        summary=f"删除情侣菜单 {snapshot['name']}",
+        detail={
+            "relationship_id": relationship.id,
+            "category_id": snapshot["category_id"],
+            "price": snapshot["price"],
+        },
+    )
+    db.commit()
+
+    return success_response(message="菜单已删除")

@@ -17,8 +17,8 @@ from app.middleware.auth import get_current_user
 from app.services.notification_service import (
     get_user_notifications,
     get_notification_by_id,
-    get_unread_count,
     get_unread_count_by_type,
+    get_unread_summary,
     mark_as_read,
     mark_all_as_read,
     notification_to_dict,
@@ -85,11 +85,11 @@ async def get_unread_notification_count(
     Requirements: 13.6
     """
     try:
-        count = get_unread_count(db, current_user.id)
         if type:
             count = get_unread_count_by_type(db, current_user.id, type)
+            return success_response(data={"unread_count": count})
 
-        return success_response(data={"unread_count": count})
+        return success_response(data=get_unread_summary(db, current_user.id))
     except Exception as e:
         return error_response(500, f"获取未读数量失败: {str(e)}")
 

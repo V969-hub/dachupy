@@ -165,3 +165,18 @@ class CoupleDateDrawAcceptRequest(BaseModel):
     plan_at: Optional[datetime_type] = Field(None, description="约会时间")
     location: Optional[str] = Field(None, max_length=128, description="地点")
     note: Optional[str] = Field(None, description="备注")
+
+
+class CoupleCalendarMonthRequest(BaseModel):
+    month: str = Field(..., description="月份，格式 YYYY-MM")
+
+
+class CoupleCalendarDayRequest(BaseModel):
+    date: date_type = Field(..., description="日期，格式 YYYY-MM-DD")
+
+
+class CoupleDailyMemorySaveRequest(BaseModel):
+    date: date_type = Field(..., description="记忆日期")
+    images: list[str] = Field(default_factory=list, max_length=9, description="图片列表")
+    content: Optional[str] = Field(None, max_length=500, description="当天一句话")
+    mood: Optional[str] = Field(None, max_length=32, description="心情标签")

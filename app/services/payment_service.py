@@ -371,7 +371,7 @@ class PaymentService:
         client_ip: str = "127.0.0.1"
     ) -> Dict[str, Any]:
         """
-        创建打赏支付
+        创建历史打赏支付
         
         Args:
             tip_id: 打赏记录ID
@@ -380,7 +380,7 @@ class PaymentService:
             client_ip: 客户端IP
             
         Returns:
-            微信支付参数
+            历史支付参数
         """
         # 获取打赏记录
         tip = self.db.query(Tip).filter(Tip.id == tip_id).first()
@@ -425,7 +425,7 @@ class PaymentService:
     
     def handle_tip_payment_notify(self, xml_data: str) -> Tuple[bool, str, Optional[str]]:
         """
-        处理打赏支付回调通知
+        处理历史打赏支付回调通知
         
         Args:
             xml_data: 微信回调的XML数据

@@ -14,7 +14,7 @@ class Tip(Base):
     Tip table storing tip records.
     
     Requirements:
-    - 10.1: Tip creation with WeChat payment
+    - 10.1: Tip creation and settlement
     """
     __tablename__ = "tips"
     
@@ -24,7 +24,7 @@ class Tip(Base):
     order_id = Column(String(36), ForeignKey("orders.id"), nullable=True, comment="关联订单ID")
     amount = Column(DECIMAL(10, 2), nullable=False, comment="打赏金额")
     message = Column(String(256), nullable=True, comment="留言")
-    payment_id = Column(String(64), nullable=True, comment="微信支付订单号")
+    payment_id = Column(String(64), nullable=True, comment="历史支付单号")
     status = Column(
         Enum("pending", "paid", "failed", name="tip_status"),
         default="pending",

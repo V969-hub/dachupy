@@ -20,6 +20,7 @@ from app.schemas.user import (
     LoginRequest, 
     AccountLoginRequest,
     LoginResponse, 
+    LoginPendingResponse,
     BindPhoneRequest, 
     UserInfo,
     BoundChefInfo
@@ -27,7 +28,7 @@ from app.schemas.user import (
 from app.services.wechat_service import code2session, WeChatServiceError
 from app.services.business_status_service import build_chef_business_status
 from app.services.wallet_service import build_wallet_payload
-from app.utils.security import create_token, generate_binding_code
+from app.utils.security import create_login_ticket, create_token, generate_binding_code, verify_login_ticket
 from app.middleware.auth import get_current_user
 
 
@@ -119,6 +120,51 @@ def _build_login_response(user: User, db: Session) -> dict:
     )
 
 
+def _build_pending_login_response(identifier: str, login_type: str, role: str | None = None) -> dict:
+    """Build a response for users that still need to choose a role."""
+    ticket = create_login_ticket(identifier=identifier, login_type=login_type)
+    return success_response(
+        data=LoginPendingResponse(
+            login_ticket=ticket,
+            existing_user=False,
+            suggested_role=role,
+            message="请选择身份后完成登录"
+        ).model_dump()
+    )
+
+
+def _login_or_prepare_registration(
+    db: Session,
+    *,
+    identifier: str,
+    login_type: str,
+    requested_role: str | None,
+) -> dict:
+    """Login existing users immediately or prepare a pending registration flow."""
+    user = db.query(User).filter(
+        User.open_id == identifier,
+        User.is_deleted == False
+    ).first()
+
+    if user is not None:
+        return _build_login_response(user, db)
+
+    if not requested_role:
+        return _build_pending_login_response(identifier=identifier, login_type=login_type)
+
+    invalid_role_response = _validate_role(requested_role)
+    if invalid_role_response:
+        return invalid_role_response
+
+    try:
+        user = _create_user(db, open_id=identifier, role=requested_role)
+    except Exception as e:
+        db.rollback()
+        return error_response(500, f"Database error: {str(e)}")
+
+    return _build_login_response(user, db)
+
+
 @router.post("/login")
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
     """
@@ -129,10 +175,6 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
     
     Requirements: 2.1, 2.2, 2.3
     """
-    invalid_role_response = _validate_role(request.role)
-    if invalid_role_response:
-        return invalid_role_response
-
     if request.code.strip() in MOCK_WECHAT_CODES:
         return error_response(
             400,
@@ -148,20 +190,12 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
     except Exception as e:
         return error_response(500, f"WeChat API error: {str(e)}")
     
-    # Check if user exists
-    user = db.query(User).filter(
-        User.open_id == open_id,
-        User.is_deleted == False
-    ).first()
-    
-    if user is None:
-        try:
-            user = _create_user(db, open_id=open_id, role=request.role)
-        except Exception as e:
-            db.rollback()
-            return error_response(500, f"Database error: {str(e)}")
-
-    return _build_login_response(user, db)
+    return _login_or_prepare_registration(
+        db,
+        identifier=open_id,
+        login_type="wechat",
+        requested_role=request.role,
+    )
 
 
 @router.post("/login/account")
@@ -176,18 +210,45 @@ async def account_login(request: AccountLoginRequest, db: Session = Depends(get_
     if not account:
         return error_response(400, "Account cannot be empty")
 
-    invalid_role_response = _validate_role(request.role)
+    try:
+        return _login_or_prepare_registration(
+            db,
+            identifier=account,
+            login_type="account",
+            requested_role=request.role,
+        )
+    except Exception as e:
+        db.rollback()
+        return error_response(500, f"Database error: {str(e)}")
+
+
+@router.post("/login/complete")
+async def complete_login(request: LoginRequest, db: Session = Depends(get_db)):
+    """
+    Complete a pending login flow using a login ticket and chosen role.
+    """
+    login_ticket = request.code.strip()
+    payload = verify_login_ticket(login_ticket)
+    if payload is None:
+        return error_response(400, "登录票据已失效，请重新登录")
+
+    requested_role = request.role
+    invalid_role_response = _validate_role(requested_role or "")
     if invalid_role_response:
         return invalid_role_response
 
-    try:
-        user = db.query(User).filter(
-            User.open_id == account,
-            User.is_deleted == False
-        ).first()
+    identifier = str(payload["identifier"])
 
-        if user is None:
-            user = _create_user(db, open_id=account, role=request.role)
+    user = db.query(User).filter(
+        User.open_id == identifier,
+        User.is_deleted == False
+    ).first()
+
+    if user is not None:
+        return _build_login_response(user, db)
+
+    try:
+        user = _create_user(db, open_id=identifier, role=requested_role or "foodie")
     except Exception as e:
         db.rollback()
         return error_response(500, f"Database error: {str(e)}")

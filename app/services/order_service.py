@@ -143,7 +143,7 @@ class OrderService:
         delivery_time: datetime,
         address_id: str,
         remarks: Optional[str] = None,
-        payment_method: str = PAYMENT_METHOD_WECHAT,
+        payment_method: str = PAYMENT_METHOD_VIRTUAL_COIN,
     ) -> Order:
         """
         创建订单
@@ -249,8 +249,8 @@ class OrderService:
             except WalletServiceError as exc:
                 raise OrderServiceError(exc.message, code=exc.code) from exc
 
-        # 创建订单
-        initial_status = "pending" if resolved_payment_method != PAYMENT_METHOD_WECHAT else "unpaid"
+        # 当前业务默认只走餐币支付，保留 wechat 常量仅用于兼容历史订单数据。
+        initial_status = "pending"
         order = Order(
             order_no=order_no,
             foodie_id=foodie_id,
@@ -437,6 +437,165 @@ class OrderService:
             return None
         
         return self._build_order_response(order)
+
+    def preview_reorder(self, order_id: str, foodie_id: str) -> dict:
+        """
+        生成“再来一次”的预检结果。
+
+        返回当前仍可下单的菜品、建议日期和不可继续下单的原因。
+        """
+        order = self.get_order_by_id(order_id)
+        if not order:
+            raise OrderServiceError("订单不存在", code=404)
+
+        if order.foodie_id != foodie_id:
+            raise OrderServiceError("无权操作此订单", code=403)
+
+        if not order.items:
+            raise OrderServiceError("原订单里没有可复用的菜品")
+
+        original_delivery_date = order.delivery_time.date() if order.delivery_time else date.today()
+        suggested_time = order.delivery_time.strftime("%H:%M") if order.delivery_time else "12:00"
+
+        available_candidates: list[dict] = []
+        unavailable_items: list[dict] = []
+        candidate_dates: set[date] = {max(original_delivery_date, date.today())}
+
+        for order_item in order.items:
+            dish = self.db.query(Dish).filter(
+                Dish.id == order_item.dish_id,
+                Dish.is_deleted == False,
+            ).first()
+
+            if not dish:
+                unavailable_items.append({
+                    "dish_id": order_item.dish_id,
+                    "dish_name": order_item.dish_name,
+                    "quantity": order_item.quantity,
+                    "reason": "菜品已删除",
+                })
+                continue
+
+            if not dish.is_on_shelf:
+                unavailable_items.append({
+                    "dish_id": order_item.dish_id,
+                    "dish_name": dish.name,
+                    "quantity": order_item.quantity,
+                    "reason": "菜品已下架",
+                })
+                continue
+
+            supported_dates = self._get_reorder_candidate_dates(dish, original_delivery_date)
+            if not supported_dates:
+                unavailable_items.append({
+                    "dish_id": dish.id,
+                    "dish_name": dish.name,
+                    "quantity": order_item.quantity,
+                    "reason": "当前没有可预订日期",
+                })
+                continue
+
+            candidate_dates.update(supported_dates)
+            available_candidates.append({
+                "order_item": order_item,
+                "dish": dish,
+                "supported_dates": supported_dates,
+            })
+
+        if not available_candidates:
+            raise OrderServiceError("原订单中的菜品当前都无法再次下单")
+
+        sorted_dates = sorted(
+            candidate_dates,
+            key=lambda candidate: (
+                candidate != original_delivery_date,
+                candidate,
+            ),
+        )
+
+        best_plan: Optional[dict] = None
+        for candidate_date in sorted_dates:
+            supported_items: list[dict] = []
+            unsupported_items: list[dict] = []
+
+            for candidate in available_candidates:
+                order_item = candidate["order_item"]
+                dish = candidate["dish"]
+                supported_dates = candidate["supported_dates"]
+
+                if candidate_date not in supported_dates:
+                    unsupported_items.append({
+                        "dish_id": dish.id,
+                        "dish_name": dish.name,
+                        "quantity": order_item.quantity,
+                        "reason": "该日期暂不可预订",
+                    })
+                    continue
+
+                available, reason = self._check_dish_availability(
+                    dish.id,
+                    candidate_date,
+                    order_item.quantity,
+                )
+                if not available:
+                    unsupported_items.append({
+                        "dish_id": dish.id,
+                        "dish_name": dish.name,
+                        "quantity": order_item.quantity,
+                        "reason": reason,
+                    })
+                    continue
+
+                supported_items.append({
+                    "dish": self._build_reorder_dish_payload(dish, candidate_date),
+                    "quantity": order_item.quantity,
+                    "selected_date": candidate_date.isoformat(),
+                    "source_item": {
+                        "dish_id": order_item.dish_id,
+                        "dish_name": order_item.dish_name,
+                        "quantity": order_item.quantity,
+                    },
+                })
+
+            if not supported_items:
+                continue
+
+            plan = {
+                "delivery_date": candidate_date,
+                "supported_items": supported_items,
+                "unsupported_items": unsupported_items,
+            }
+
+            if not best_plan:
+                best_plan = plan
+                continue
+
+            if len(supported_items) > len(best_plan["supported_items"]):
+                best_plan = plan
+                continue
+
+            if len(supported_items) == len(best_plan["supported_items"]):
+                if candidate_date == original_delivery_date and best_plan["delivery_date"] != original_delivery_date:
+                    best_plan = plan
+                elif candidate_date < best_plan["delivery_date"]:
+                    best_plan = plan
+
+        if not best_plan:
+            raise OrderServiceError("当前没有可再次下单的菜品")
+
+        merged_unavailable = unavailable_items + best_plan["unsupported_items"]
+        suggested_date = best_plan["delivery_date"].isoformat()
+
+        return {
+            "order_id": order.id,
+            "order_no": order.order_no,
+            "delivery_date": suggested_date,
+            "delivery_time": suggested_time,
+            "remarks": order.remarks or "",
+            "date_adjusted": suggested_date != original_delivery_date.isoformat(),
+            "available_items": best_plan["supported_items"],
+            "unavailable_items": merged_unavailable,
+        }
     
     # ==================== 订单状态管理 ====================
     
@@ -888,6 +1047,62 @@ class OrderService:
             return False, f"菜品 {dish.name} 库存不足，当前可用: {available}"
         
         return True, ""
+
+    def _get_reorder_candidate_dates(self, dish: Dish, original_delivery_date: date) -> list[date]:
+        """
+        获取“再来一次”可尝试的候选日期。
+
+        当前订单流一次只支持一个配送日期，所以这里提前选出一组公共候选日期。
+        """
+        today = date.today()
+        available_dates = dish.available_dates or []
+        parsed_dates: list[date] = []
+
+        for raw_date in available_dates:
+            try:
+                parsed = date.fromisoformat(str(raw_date))
+            except (TypeError, ValueError):
+                continue
+            if parsed >= today:
+                parsed_dates.append(parsed)
+
+        if parsed_dates:
+            unique_dates = sorted(set(parsed_dates))
+            if original_delivery_date in unique_dates:
+                return unique_dates
+            return unique_dates
+
+        fallback_date = original_delivery_date if original_delivery_date >= today else today
+        return [fallback_date]
+
+    def _build_reorder_dish_payload(self, dish: Dish, target_date: date) -> dict:
+        available_quantity = self.db.query(DailyDishQuantity).filter(
+            DailyDishQuantity.dish_id == dish.id,
+            DailyDishQuantity.date == target_date,
+        ).first()
+        booked_quantity = available_quantity.booked_quantity if available_quantity else 0
+        remaining_quantity = max(dish.max_quantity - booked_quantity, 0)
+
+        return {
+            "id": dish.id,
+            "chef_id": dish.chef_id,
+            "name": dish.name,
+            "price": float(dish.price),
+            "images": dish.images or [],
+            "description": dish.description,
+            "ingredients": dish.ingredients or [],
+            "tags": dish.tags or [],
+            "category": dish.category,
+            "available_dates": [str(item) for item in (dish.available_dates or [])],
+            "max_quantity": dish.max_quantity,
+            "current_quantity": booked_quantity,
+            "available_quantity": remaining_quantity,
+            "rating": float(dish.rating) if dish.rating else 5.0,
+            "review_count": dish.review_count or 0,
+            "is_on_shelf": dish.is_on_shelf,
+            "created_at": dish.created_at.isoformat() if dish.created_at else None,
+            "updated_at": dish.updated_at.isoformat() if dish.updated_at else None,
+        }
     
     def _update_booked_quantity(
         self,

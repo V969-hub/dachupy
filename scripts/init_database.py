@@ -39,6 +39,8 @@ EXPECTED_TABLES = [
     "couple_restaurant_categories",
     "couple_restaurant_items",
     "couple_restaurant_cart_items",
+    "admin_broadcasts",
+    "admin_operation_logs",
 ]
 
 REQUIRED_COLUMNS = {

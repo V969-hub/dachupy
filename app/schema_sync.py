@@ -387,6 +387,26 @@ TABLE_SPECS: tuple[TableSpec, ...] = (
         ),
     ),
     TableSpec(
+        "admin_operation_logs",
+        (
+            ColumnSpec("id", "id VARCHAR(36) PRIMARY KEY"),
+            ColumnSpec("operator_username", "operator_username VARCHAR(64) NOT NULL COMMENT '操作账号'"),
+            ColumnSpec("operator_name", "operator_name VARCHAR(64) NOT NULL COMMENT '操作人名称'"),
+            ColumnSpec("action_type", "action_type VARCHAR(64) NOT NULL COMMENT '操作类型'"),
+            ColumnSpec("target_type", "target_type VARCHAR(32) NOT NULL COMMENT '目标类型'"),
+            ColumnSpec("target_id", "target_id VARCHAR(64) DEFAULT NULL COMMENT '目标ID'"),
+            ColumnSpec("summary", "summary VARCHAR(255) NOT NULL COMMENT '操作摘要'"),
+            ColumnSpec("detail", "detail JSON DEFAULT NULL COMMENT '操作详情'"),
+            ColumnSpec("created_at", "created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'"),
+        ),
+        (
+            IndexSpec("idx_admin_operation_logs_created_at", ("created_at",)),
+            IndexSpec("idx_admin_operation_logs_action_type", ("action_type",)),
+            IndexSpec("idx_admin_operation_logs_target_type", ("target_type",)),
+            IndexSpec("idx_admin_operation_logs_operator_username", ("operator_username",)),
+        ),
+    ),
+    TableSpec(
         "favorites",
         (
             ColumnSpec("id", "id VARCHAR(36) PRIMARY KEY"),
@@ -490,6 +510,33 @@ TABLE_SPECS: tuple[TableSpec, ...] = (
         (
             IndexSpec("idx_couple_date_plans_relationship", ("relationship_id",)),
             IndexSpec("idx_couple_date_plans_plan_at", ("plan_at",)),
+        ),
+    ),
+    TableSpec(
+        "couple_daily_memories",
+        (
+            ColumnSpec("id", "id VARCHAR(36) PRIMARY KEY"),
+            ColumnSpec("relationship_id", "relationship_id VARCHAR(36) NOT NULL COMMENT '情侣关系ID'"),
+            ColumnSpec("memory_date", "memory_date DATE NOT NULL COMMENT '记忆日期'"),
+            ColumnSpec("images", "images JSON NOT NULL COMMENT '图片列表'"),
+            ColumnSpec("cover_image", "cover_image VARCHAR(512) DEFAULT NULL COMMENT '封面图'"),
+            ColumnSpec("content", "content TEXT DEFAULT NULL COMMENT '当天一句话'"),
+            ColumnSpec("mood", "mood VARCHAR(32) DEFAULT NULL COMMENT '心情标签'"),
+            ColumnSpec("created_by", "created_by VARCHAR(36) NOT NULL COMMENT '最近编辑人'"),
+            ColumnSpec("created_at", "created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'"),
+            ColumnSpec(
+                "updated_at",
+                "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
+            ),
+        ),
+        (
+            IndexSpec(
+                "uk_couple_daily_memory_relationship_date",
+                ("relationship_id", "memory_date"),
+                unique=True,
+            ),
+            IndexSpec("idx_couple_daily_memories_relationship", ("relationship_id",)),
+            IndexSpec("idx_couple_daily_memories_memory_date", ("memory_date",)),
         ),
     ),
     TableSpec(

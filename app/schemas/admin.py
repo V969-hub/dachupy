@@ -1,6 +1,7 @@
 """
 Schemas for the admin console APIs.
 """
+from datetime import date as date_type
 from decimal import Decimal
 from typing import Optional
 
@@ -76,5 +77,23 @@ class AdminRefundCreateRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=256, description="退款原因")
     note: Optional[str] = Field(None, description="退款备注")
     mark_manual_processed: bool = Field(default=False, description="微信退款是否已在线下完成，仅登记记录")
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AdminOperationLogCreateRequest(BaseModel):
+    action_type: str = Field(..., min_length=1, max_length=64, description="操作类型")
+    target_type: str = Field(..., min_length=1, max_length=32, description="目标类型")
+    target_id: Optional[str] = Field(None, max_length=64, description="目标ID")
+    summary: str = Field(..., min_length=1, max_length=255, description="操作摘要")
+    detail: Optional[dict] = Field(None, description="操作详情")
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AdminCoupleBindRequest(BaseModel):
+    user_a_id: str = Field(..., min_length=1, max_length=64, description="情侣用户A")
+    user_b_id: str = Field(..., min_length=1, max_length=64, description="情侣用户B")
+    anniversary_date: Optional[date_type] = Field(None, description="在一起日期")
 
     model_config = ConfigDict(extra="forbid")

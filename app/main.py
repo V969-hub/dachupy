@@ -134,7 +134,7 @@ tags_metadata = [
     },
     {
         "name": "Payment",
-        "description": "支付相关接口，包括微信支付回调"
+        "description": "历史支付兼容接口，保留回调处理能力"
     },
     {
         "name": "评价",
@@ -219,15 +219,15 @@ app = FastAPI(
     description="""
 ## 概述
 
-私厨预订微信小程序后端API服务，为吃货端和大厨端小程序提供数据支持。
+私厨预订应用后端API服务，为吃货端和大厨端应用提供数据支持。
 
 ## 功能模块
 
-- **认证模块**: 微信登录、JWT认证
+- **认证模块**: 登录、JWT认证
 - **用户模块**: 个人信息管理
 - **菜品模块**: 菜品CRUD、搜索筛选
 - **订单模块**: 订单创建、状态管理
-- **支付模块**: 微信支付集成
+- **支付模块**: 历史支付兼容
 - **评价模块**: 订单评价
 - **打赏模块**: 大厨打赏
 - **地址模块**: 配送地址管理
@@ -289,7 +289,7 @@ Authorization: Bearer <token>
 # 配置CORS中间件
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许所有来源（微信小程序）
+    allow_origins=["*"],  # 允许所有来源
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -3,6 +3,7 @@ Service layer for the couple memo MVP.
 """
 import calendar
 import random
+from collections import defaultdict
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -15,6 +16,7 @@ from app.models.couple import (
     CoupleMemo,
     CoupleAnniversary,
     CoupleDatePlan,
+    CoupleDailyMemory,
     CoupleRestaurantCategory,
     CoupleRestaurantItem,
     CoupleRestaurantCartItem,
@@ -23,6 +25,7 @@ from app.models.couple import (
 )
 from app.models.order import Order
 from app.models.notification import Notification
+from app.models.tip import Tip
 from app.models.user import User
 from app.services.notification_service import create_notification
 from app.utils.security import generate_binding_code
@@ -37,6 +40,10 @@ DATE_DRAW_SOURCES = {"mixed", "wishes", "restaurant", "anniversaries"}
 RESTAURANT_RECOMMENDATION_SOURCES = {"mixed", "restaurant", "wishes"}
 MAX_RESTAURANT_IMAGES = 9
 MAX_RESTAURANT_TAGS = 8
+LEDGER_PERIODS = {"all", "week", "month"}
+REPORT_PERIODS = {"week", "month"}
+CALENDAR_MOODS = {"开心", "甜蜜", "平静", "想念", "仪式感"}
+CALENDAR_EVENT_TYPES = ("memory", "anniversary", "memo", "date_plan")
 
 
 class CoupleServiceError(Exception):
@@ -107,10 +114,11 @@ def _partner_to_dict(user: Optional[User]) -> Optional[dict]:
     }
 
 
-def _calculate_love_days(anniversary_date: Optional[date]) -> int:
+def _calculate_love_days(anniversary_date: Optional[date], reference_date: Optional[date] = None) -> int:
     if not anniversary_date:
         return 0
-    delta = _today() - anniversary_date
+    target_date = reference_date or _today()
+    delta = target_date - anniversary_date
     return max(delta.days + 1, 0)
 
 
@@ -126,6 +134,18 @@ def _format_short_date(value: Optional[date]) -> str:
     return value.strftime("%Y年%m月%d日")
 
 
+def _iso_date(value: Optional[date]) -> Optional[str]:
+    if not value:
+        return None
+    return value.isoformat()
+
+
+def _iso_datetime(value: Optional[datetime]) -> Optional[str]:
+    if not value:
+        return None
+    return value.isoformat()
+
+
 def _normalize_title(title: str, title_type: str) -> str:
     normalized_title = title.strip()
     if not normalized_title:
@@ -138,12 +158,24 @@ def _date_with_safe_year(source_date: date, year: int) -> date:
     return source_date.replace(year=year, day=min(source_date.day, last_day))
 
 
-def _next_anniversary_occurrence(source_date: date) -> date:
-    today = _today()
-    this_year = _date_with_safe_year(source_date, today.year)
-    if this_year >= today:
+def _next_anniversary_occurrence(source_date: date, reference_date: Optional[date] = None) -> date:
+    target_date = reference_date or _today()
+    this_year = _date_with_safe_year(source_date, target_date.year)
+    if this_year >= target_date:
         return this_year
-    return _date_with_safe_year(source_date, today.year + 1)
+    return _date_with_safe_year(source_date, target_date.year + 1)
+
+
+def _calendar_date_from_datetime(value: Optional[datetime]) -> Optional[str]:
+    if not value:
+        return None
+    return value.date().isoformat()
+
+
+def _calendar_date_from_anniversary(source_date: Optional[date]) -> Optional[str]:
+    if not source_date:
+        return None
+    return _next_anniversary_occurrence(source_date).isoformat()
 
 
 def anniversary_to_dict(anniversary: CoupleAnniversary) -> dict:
@@ -205,6 +237,54 @@ def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _parse_month_value(month_value: str) -> tuple[int, int]:
+    normalized = (month_value or "").strip()
+    try:
+        parsed = datetime.strptime(normalized, "%Y-%m")
+    except ValueError as exc:
+        raise CoupleServiceError("月份格式错误，请使用 YYYY-MM") from exc
+    return parsed.year, parsed.month
+
+
+def _normalize_memory_images(images: Optional[list[str]]) -> list[str]:
+    if not images:
+        return []
+    normalized_images = [image.strip() for image in images if isinstance(image, str) and image.strip()]
+    if len(normalized_images) > MAX_RESTAURANT_IMAGES:
+        raise CoupleServiceError(f"每日记忆最多上传 {MAX_RESTAURANT_IMAGES} 张图片")
+    return normalized_images
+
+
+def _normalize_calendar_mood(mood: Optional[str]) -> Optional[str]:
+    normalized_mood = _normalize_optional_text(mood)
+    if normalized_mood is None:
+        return None
+    if normalized_mood not in CALENDAR_MOODS:
+        raise CoupleServiceError("无效的心情标签")
+    return normalized_mood
+
+
+def _require_past_or_today(target_date: date) -> None:
+    if target_date > _today():
+        raise CoupleServiceError("未来日期暂不支持上传当天记忆")
+
+
+def daily_memory_to_dict(memory: CoupleDailyMemory) -> dict:
+    images = memory.images or []
+    return {
+        "id": memory.id,
+        "relationship_id": memory.relationship_id,
+        "date": memory.memory_date.isoformat(),
+        "images": images,
+        "cover_image": memory.cover_image or (images[0] if images else None),
+        "content": memory.content,
+        "mood": memory.mood,
+        "created_by": memory.created_by,
+        "created_at": memory.created_at.isoformat() if memory.created_at else None,
+        "updated_at": memory.updated_at.isoformat() if memory.updated_at else None,
+    }
 
 
 def _normalize_price(price: float | Decimal) -> Decimal:
@@ -324,6 +404,28 @@ def _get_date_draw_or_raise(db: Session, relationship_id: str, draw_id: str) -> 
     if not draw:
         raise CoupleServiceError("抽卡记录不存在", code=404)
     return draw
+
+
+def _get_daily_memory(
+    db: Session,
+    relationship_id: str,
+    target_date: date,
+) -> Optional[CoupleDailyMemory]:
+    return db.query(CoupleDailyMemory).filter(
+        CoupleDailyMemory.relationship_id == relationship_id,
+        CoupleDailyMemory.memory_date == target_date,
+    ).first()
+
+
+def _get_daily_memory_or_raise(
+    db: Session,
+    relationship_id: str,
+    target_date: date,
+) -> CoupleDailyMemory:
+    memory = _get_daily_memory(db, relationship_id, target_date)
+    if not memory:
+        raise CoupleServiceError("当天还没有留下记忆", code=404)
+    return memory
 
 
 def restaurant_category_to_dict(db: Session, category: CoupleRestaurantCategory) -> dict:
@@ -448,6 +550,9 @@ def _notify_partner_date_draw_event(
     elif action == "restored":
         title = "约会卡重新开启"
         content = f"{actor_name} 重新开启了“{draw.title}”"
+    elif action == "deleted":
+        title = "约会抽卡记录已删除"
+        content = f"{actor_name} 删除了“{draw.title}”"
 
     create_notification(
         db=db,
@@ -463,6 +568,9 @@ def _notify_partner_date_draw_event(
             "draw_status": draw.status,
             "card_type": draw.card_type,
             "plan_id": draw.plan_id,
+            "plan_at": _iso_datetime(draw.plan.plan_at if draw.plan and draw.plan.plan_at else None),
+            "calendar_date": _calendar_date_from_datetime(draw.plan.plan_at if draw.plan and draw.plan.plan_at else None),
+            "calendar_filter": "date_plan" if draw.plan and draw.plan.plan_at else None,
             "actor_id": actor.id,
             "actor_name": actor_name,
         }
@@ -692,6 +800,9 @@ def _notify_partner_memo_event(
             "memo_title": memo.title,
             "category": memo.category,
             "is_completed": memo.is_completed,
+            "remind_at": _iso_datetime(memo.remind_at),
+            "calendar_date": _calendar_date_from_datetime(memo.remind_at),
+            "calendar_filter": "memo",
             "actor_id": actor.id,
             "actor_name": actor_name,
         }
@@ -804,6 +915,7 @@ def delete_memo(db: Session, relationship: CoupleRelationship, current_user: Use
         title=memo.title,
         category=memo.category,
         is_completed=memo.is_completed,
+        remind_at=memo.remind_at,
     )
     db.delete(memo)
     db.commit()
@@ -857,6 +969,9 @@ def _notify_partner_anniversary_event(
             "anniversary_id": anniversary.id,
             "anniversary_title": anniversary.title,
             "anniversary_type": anniversary.type,
+            "anniversary_date": _iso_date(anniversary.date),
+            "calendar_date": _calendar_date_from_anniversary(anniversary.date),
+            "calendar_filter": "anniversary",
             "actor_id": actor.id,
             "actor_name": actor_name,
         }
@@ -1028,6 +1143,9 @@ def _notify_partner_date_plan_event(
             "plan_id": plan_id,
             "plan_title": plan_title,
             "status": status,
+            "plan_at": _iso_datetime(plan_at),
+            "calendar_date": _calendar_date_from_datetime(plan_at),
+            "calendar_filter": "date_plan",
             "actor_id": actor.id,
             "actor_name": actor_name,
         }
@@ -1045,7 +1163,6 @@ def create_date_plan(
     anniversary_id: Optional[str],
     order_id: Optional[str],
     menu_items: Optional[list[dict]] = None,
-    notify_partner: bool = True,
 ) -> CoupleDatePlan:
     normalized_title = _normalize_title(title, "约饭计划")
     _validate_anniversary_link(db, relationship, anniversary_id)
@@ -1067,18 +1184,7 @@ def create_date_plan(
     db.add(plan)
     db.commit()
     db.refresh(plan)
-    if notify_partner:
-        _notify_partner_date_plan_event(
-            db,
-            relationship,
-            current_user,
-            plan.id,
-            plan.title,
-            plan.plan_at,
-            plan.location,
-            plan.status,
-            "created",
-        )
+    # 约饭计划以共享列表和到点提醒为主，避免创建瞬间先打断对方。
     return plan
 
 
@@ -2008,7 +2114,6 @@ def accept_date_draw(
         anniversary_id,
         None,
         menu_items,
-        notify_partner=False,
     )
 
     draw.plan_id = plan.id
@@ -2042,6 +2147,86 @@ def update_date_draw_status(
     return draw
 
 
+def delete_date_draw(
+    db: Session,
+    relationship: CoupleRelationship,
+    current_user: User,
+    draw_id: str,
+) -> None:
+    draw = _get_date_draw_or_raise(db, relationship.id, draw_id)
+    if draw.plan_id or draw.status == "accepted":
+        raise CoupleServiceError("已生成约饭计划的抽卡记录不能删除，请先保留记录")
+
+    draw_snapshot = CoupleDateDraw(
+        id=draw.id,
+        title=draw.title,
+        card_type=draw.card_type,
+        plan_id=draw.plan_id,
+        status=draw.status,
+    )
+    db.delete(draw)
+    db.commit()
+    _notify_partner_date_draw_event(db, relationship, current_user, draw_snapshot, "deleted")
+
+
+def save_daily_memory(
+    db: Session,
+    relationship: CoupleRelationship,
+    current_user: User,
+    target_date: date,
+    images: Optional[list[str]],
+    content: Optional[str],
+    mood: Optional[str],
+) -> Optional[CoupleDailyMemory]:
+    _require_past_or_today(target_date)
+    normalized_images = _normalize_memory_images(images)
+    normalized_content = _normalize_optional_text(content)
+    normalized_mood = _normalize_calendar_mood(mood)
+
+    memory = _get_daily_memory(db, relationship.id, target_date)
+    should_delete = not normalized_images and normalized_content is None and normalized_mood is None
+
+    if should_delete:
+        if memory:
+            db.delete(memory)
+            db.commit()
+        return None
+
+    cover_image = normalized_images[0] if normalized_images else None
+
+    if memory:
+        memory.images = normalized_images
+        memory.cover_image = cover_image
+        memory.content = normalized_content
+        memory.mood = normalized_mood
+        memory.created_by = current_user.id
+    else:
+        memory = CoupleDailyMemory(
+            relationship_id=relationship.id,
+            memory_date=target_date,
+            images=normalized_images,
+            cover_image=cover_image,
+            content=normalized_content,
+            mood=normalized_mood,
+            created_by=current_user.id,
+        )
+        db.add(memory)
+
+    db.commit()
+    db.refresh(memory)
+    return memory
+
+
+def delete_daily_memory(
+    db: Session,
+    relationship: CoupleRelationship,
+    target_date: date,
+) -> None:
+    memory = _get_daily_memory_or_raise(db, relationship.id, target_date)
+    db.delete(memory)
+    db.commit()
+
+
 def _notification_exists_today(
     db: Session,
     user_id: str,
@@ -2061,6 +2246,312 @@ def _notification_exists_today(
             return True
 
     return False
+
+
+def _build_calendar_event_target_path(event_type: str, event_id: str) -> str:
+    if event_type == "anniversary":
+        return f"/pages/foodie/couple/anniversary/index?id={event_id}"
+    if event_type == "memo":
+        return f"/pages/foodie/couple/memo-edit/index?id={event_id}"
+    if event_type == "date_plan":
+        return f"/pages/foodie/couple/date-plan/index?id={event_id}"
+    return ""
+
+
+def _get_calendar_event_target_section(event_type: str) -> Optional[str]:
+    target_sections = {
+        "anniversary": "anniversary",
+        "memo": "memo-edit",
+        "date_plan": "date-plan",
+    }
+    return target_sections.get(event_type)
+
+
+def _build_calendar_event_target(event_type: str, event_id: str) -> dict:
+    return {
+        "target": _build_calendar_event_target_path(event_type, event_id),
+        "target_section": _get_calendar_event_target_section(event_type),
+        "target_id": event_id,
+    }
+
+
+def _sort_calendar_events(events: list[dict]) -> list[dict]:
+    event_priority = {
+        "anniversary": 0,
+        "date_plan": 1,
+        "memo": 2,
+    }
+
+    def _event_sort_key(item: dict) -> tuple:
+        event_type = item.get("type", "")
+        sort_time = item.get("_sort_time")
+        return (
+            event_priority.get(event_type, 99),
+            sort_time or "23:59:59",
+            item.get("title") or "",
+        )
+
+    return sorted(events, key=_event_sort_key)
+
+
+def _calculate_memory_streak(memory_dates: list[date]) -> int:
+    if not memory_dates:
+        return 0
+
+    sorted_dates = sorted(set(memory_dates))
+    max_streak = 1
+    current_streak = 1
+
+    for previous_date, current_date in zip(sorted_dates, sorted_dates[1:]):
+        if current_date == previous_date + timedelta(days=1):
+            current_streak += 1
+        else:
+            current_streak = 1
+        max_streak = max(max_streak, current_streak)
+
+    return max_streak
+
+
+def _build_day_summary_text(
+    memory: Optional[CoupleDailyMemory],
+    anniversaries: list[CoupleAnniversary],
+    memos: list[CoupleMemo],
+    plans: list[CoupleDatePlan],
+) -> str:
+    parts: list[str] = []
+    if memory and (memory.images or []):
+        parts.append(f"留下了 {len(memory.images or [])} 张照片")
+    if plans:
+        parts.append(f"安排了 {len(plans)} 次约饭")
+    if memos:
+        parts.append(f"记下了 {len(memos)} 条提醒")
+    if anniversaries:
+        parts.append(f"遇到了 {len(anniversaries)} 个重要日子")
+
+    if not parts and memory and memory.content:
+        return "这一天留下了一句值得回看的话。"
+    if not parts:
+        return "这一天还没有留下特别多记录，但它仍然会慢慢变成你们的故事。"
+    if len(parts) == 1:
+        return f"这一天你们{parts[0]}。"
+    return f"这一天你们{parts[0]}，也{parts[1]}。"
+
+
+def _collect_calendar_day_data(
+    db: Session,
+    relationship: CoupleRelationship,
+    target_date: date,
+) -> dict:
+    memory = _get_daily_memory(db, relationship.id, target_date)
+    anniversaries = [
+        item for item in list_anniversaries(db, relationship)
+        if _next_anniversary_occurrence(item.date, target_date) == target_date
+    ]
+    memos = db.query(CoupleMemo).filter(
+        CoupleMemo.relationship_id == relationship.id,
+        CoupleMemo.remind_at.isnot(None),
+    ).all()
+    memos = [item for item in memos if item.remind_at and item.remind_at.date() == target_date]
+    plans = [
+        item for item in list_date_plans(db, relationship, "all")
+        if item.plan_at and item.plan_at.date() == target_date
+    ]
+
+    events: list[dict] = []
+    for anniversary in anniversaries:
+        events.append({
+            "id": anniversary.id,
+            "type": "anniversary",
+            "title": anniversary.title,
+            "subtitle": f"{anniversary.type} · {'今天' if target_date == _today() else target_date.isoformat()}",
+            "time_text": "全天",
+            "_sort_time": "00:00:00",
+            **_build_calendar_event_target("anniversary", anniversary.id),
+        })
+    for plan in plans:
+        plan_time = plan.plan_at.strftime("%H:%M") if plan.plan_at else "全天"
+        plan_subtitle = f"约饭计划{f' · {plan.location}' if plan.location else ''}"
+        events.append({
+            "id": plan.id,
+            "type": "date_plan",
+            "title": plan.title,
+            "subtitle": plan_subtitle,
+            "time_text": plan_time,
+            "_sort_time": plan_time,
+            **_build_calendar_event_target("date_plan", plan.id),
+        })
+    for memo in memos:
+        memo_time = memo.remind_at.strftime("%H:%M") if memo.remind_at else "全天"
+        events.append({
+            "id": memo.id,
+            "type": "memo",
+            "title": memo.title,
+            "subtitle": f"备忘提醒 · {memo.category}",
+            "time_text": memo_time,
+            "_sort_time": memo_time,
+            **_build_calendar_event_target("memo", memo.id),
+        })
+
+    sorted_events = _sort_calendar_events(events)
+    for item in sorted_events:
+        item.pop("_sort_time", None)
+
+    return {
+        "memory": daily_memory_to_dict(memory) if memory else None,
+        "anniversaries": anniversaries,
+        "memos": memos,
+        "plans": plans,
+        "events": sorted_events,
+    }
+
+
+def get_calendar_day(
+    db: Session,
+    current_user: User,
+    target_date: date,
+) -> dict:
+    relationship = require_relationship(db, current_user)
+    day_data = _collect_calendar_day_data(db, relationship, target_date)
+    summary_text = _build_day_summary_text(
+        _get_daily_memory(db, relationship.id, target_date),
+        day_data["anniversaries"],
+        day_data["memos"],
+        day_data["plans"],
+    )
+
+    return {
+        "date": target_date.isoformat(),
+        "weekday": f"周{'一二三四五六日'[target_date.weekday()]}",
+        "is_today": target_date == _today(),
+        "is_future": target_date > _today(),
+        "love_day_no": _calculate_love_days(relationship.anniversary_date, target_date),
+        "summary_text": summary_text,
+        "memory": day_data["memory"],
+        "events": day_data["events"],
+    }
+
+
+def get_calendar_month(
+    db: Session,
+    current_user: User,
+    month_value: str,
+) -> dict:
+    relationship = require_relationship(db, current_user)
+    year, month = _parse_month_value(month_value)
+    month_calendar = calendar.Calendar(firstweekday=0)
+    month_weeks = month_calendar.monthdatescalendar(year, month)
+    while len(month_weeks) < 6:
+        last_week = month_weeks[-1]
+        next_week_start = last_week[-1] + timedelta(days=1)
+        month_weeks.append([next_week_start + timedelta(days=index) for index in range(7)])
+    month_dates = [day for week in month_weeks[:6] for day in week]
+
+    memories = db.query(CoupleDailyMemory).filter(
+        CoupleDailyMemory.relationship_id == relationship.id,
+        CoupleDailyMemory.memory_date >= month_dates[0],
+        CoupleDailyMemory.memory_date <= month_dates[-1],
+    ).all()
+    memory_map = {item.memory_date: item for item in memories}
+
+    anniversary_map: dict[date, list[CoupleAnniversary]] = defaultdict(list)
+    for anniversary in list_anniversaries(db, relationship):
+        occurrence = _next_anniversary_occurrence(anniversary.date, month_dates[0])
+        if month_dates[0] <= occurrence <= month_dates[-1]:
+            anniversary_map[occurrence].append(anniversary)
+
+    memo_map: dict[date, list[CoupleMemo]] = defaultdict(list)
+    for memo in db.query(CoupleMemo).filter(
+        CoupleMemo.relationship_id == relationship.id,
+        CoupleMemo.remind_at.isnot(None),
+    ).all():
+        if memo.remind_at:
+            memo_date = memo.remind_at.date()
+            if month_dates[0] <= memo_date <= month_dates[-1]:
+                memo_map[memo_date].append(memo)
+
+    plan_map: dict[date, list[CoupleDatePlan]] = defaultdict(list)
+    for plan in list_date_plans(db, relationship, "all"):
+        if plan.plan_at:
+            plan_date = plan.plan_at.date()
+            if month_dates[0] <= plan_date <= month_dates[-1]:
+                plan_map[plan_date].append(plan)
+
+    cells: list[dict] = []
+    photo_count = 0
+    memory_day_count = 0
+    current_month_memory_dates: list[date] = []
+    for target_date in month_dates:
+        memory = memory_map.get(target_date)
+        anniversaries = anniversary_map.get(target_date, [])
+        memos = memo_map.get(target_date, [])
+        plans = plan_map.get(target_date, [])
+        event_type_counts = {
+            "memory": 1 if memory else 0,
+            "anniversary": len(anniversaries),
+            "memo": len(memos),
+            "date_plan": len(plans),
+        }
+
+        preview_events: list[dict] = []
+        dot_types: list[str] = []
+        if memory:
+            dot_types.append("memory")
+        if memory and target_date.month == month:
+            current_month_memory_dates.append(target_date)
+            photo_count += len(memory.images or [])
+            memory_day_count += 1
+        if anniversaries:
+            dot_types.append("anniversary")
+            preview_events.append({
+                "type": "anniversary",
+                "label": anniversaries[0].title[:10],
+                **_build_calendar_event_target("anniversary", anniversaries[0].id),
+            })
+        if plans:
+            dot_types.append("date_plan")
+            preview_events.append({
+                "type": "date_plan",
+                "label": plans[0].title[:10],
+                **_build_calendar_event_target("date_plan", plans[0].id),
+            })
+        if memos:
+            dot_types.append("memo")
+            preview_events.append({
+                "type": "memo",
+                "label": memos[0].title[:10],
+                **_build_calendar_event_target("memo", memos[0].id),
+            })
+
+        cells.append({
+            "date": target_date.isoformat(),
+            "day": target_date.day,
+            "is_current_month": target_date.month == month,
+            "is_today": target_date == _today(),
+            "is_future": target_date > _today(),
+            "is_weekend": target_date.weekday() >= 5,
+            "festival_label": "",
+            "memory_cover": memory.cover_image if memory else None,
+            "memory_image_count": len(memory.images or []) if memory else 0,
+            "mood": memory.mood if memory else None,
+            "preview_events": preview_events[:2],
+            "dot_types": [item for item in CALENDAR_EVENT_TYPES if item in dot_types],
+            "event_type_counts": event_type_counts,
+            "event_count": sum(event_type_counts.values()),
+        })
+
+    return {
+        "month": f"{year:04d}-{month:02d}",
+        "today": _today().isoformat(),
+        "summary": {
+            "memory_day_count": memory_day_count,
+            "memory_streak": _calculate_memory_streak(current_month_memory_dates),
+            "photo_count": photo_count,
+            "anniversary_count": len([item for item in cells if "anniversary" in item["dot_types"] and item["is_current_month"]]),
+            "memo_reminder_count": len([item for item in cells if "memo" in item["dot_types"] and item["is_current_month"]]),
+            "date_plan_count": len([item for item in cells if "date_plan" in item["dot_types"] and item["is_current_month"]]),
+        },
+        "cells": cells,
+    }
 
 
 def sync_due_notifications(db: Session, relationship: CoupleRelationship) -> None:
@@ -2087,6 +2578,9 @@ def sync_due_notifications(db: Session, relationship: CoupleRelationship) -> Non
             "memo_title": memo.title,
             "category": memo.category,
             "is_completed": memo.is_completed,
+            "remind_at": _iso_datetime(memo.remind_at),
+            "calendar_date": _calendar_date_from_datetime(memo.remind_at),
+            "calendar_filter": "memo",
         }
         for user_id in users:
             if not _notification_exists_today(db, user_id, "couple_memo", data):
@@ -2109,6 +2603,9 @@ def sync_due_notifications(db: Session, relationship: CoupleRelationship) -> Non
                 "anniversary_id": anniversary.id,
                 "anniversary_title": anniversary.title,
                 "anniversary_type": anniversary.type,
+                "anniversary_date": _iso_date(anniversary.date),
+                "calendar_date": _calendar_date_from_anniversary(anniversary.date),
+                "calendar_filter": "anniversary",
             }
             for user_id in users:
                 if not _notification_exists_today(db, user_id, "couple_anniversary", data):
@@ -2137,6 +2634,9 @@ def sync_due_notifications(db: Session, relationship: CoupleRelationship) -> Non
             "plan_id": plan.id,
             "plan_title": plan.title,
             "status": plan.status,
+            "plan_at": _iso_datetime(plan.plan_at),
+            "calendar_date": _calendar_date_from_datetime(plan.plan_at),
+            "calendar_filter": "date_plan",
         }
         content = "今天有一个约饭计划待确认"
         if plan.location:
@@ -2160,6 +2660,378 @@ def sync_all_due_notifications(db: Session) -> int:
     return len(relationships)
 
 
+def _to_decimal(value: Decimal | float | int | None) -> Decimal:
+    return Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _relationship_user_ids(relationship: CoupleRelationship) -> list[str]:
+    return [relationship.user_a_id, relationship.user_b_id]
+
+
+def _resolve_period_window(
+    period: str,
+    relationship: CoupleRelationship,
+) -> dict:
+    normalized_period = (period or "all").strip().lower()
+    if normalized_period not in LEDGER_PERIODS:
+        raise CoupleServiceError("不支持的时间范围")
+
+    today = _today()
+    now = _current_time()
+
+    if normalized_period == "week":
+        start_date = today - timedelta(days=today.weekday())
+        label = "本周"
+    elif normalized_period == "month":
+        start_date = today.replace(day=1)
+        label = "本月"
+    else:
+        relationship_created_at = relationship.created_at or now
+        start_date = relationship_created_at.date()
+        label = "全部"
+
+    start_dt = datetime.combine(start_date, datetime.min.time())
+    relationship_start = relationship.created_at or start_dt
+    if start_dt < relationship_start:
+        start_dt = relationship_start
+
+    return {
+        "period": normalized_period,
+        "label": label,
+        "start_dt": start_dt,
+        "end_dt": now,
+        "start_date": start_dt.date(),
+        "end_date": now.date(),
+    }
+
+
+def _is_between(
+    value: Optional[datetime],
+    start_dt: datetime,
+    end_dt: datetime,
+) -> bool:
+    if not value:
+        return False
+    return start_dt <= value <= end_dt
+
+
+def _format_order_entry_title(order: Order) -> str:
+    if not order.items:
+        return f"预约下单 · {order.order_no}"
+
+    first_item_name = order.items[0].dish_name or "菜单"
+    if len(order.items) == 1:
+        return f"预约下单 · {first_item_name}"
+    return f"预约下单 · {first_item_name} 等 {len(order.items)} 道"
+
+
+def _build_ledger_summary(entries: list[dict]) -> dict:
+    order_total = Decimal("0.00")
+    tip_total = Decimal("0.00")
+    refund_total = Decimal("0.00")
+    virtual_coin_total = Decimal("0.00")
+    wechat_total = Decimal("0.00")
+    free_order_count = 0
+
+    for entry in entries:
+        amount = _to_decimal(entry.get("amount"))
+        entry_type = entry.get("type")
+        payment_method = entry.get("payment_method")
+
+        if entry_type in {"order", "free_order"}:
+            if entry_type == "free_order":
+                free_order_count += 1
+            else:
+                order_total += amount
+
+            if payment_method == "virtual_coin":
+                virtual_coin_total += amount
+            elif payment_method == "wechat":
+                wechat_total += amount
+        elif entry_type == "tip":
+            tip_total += amount
+            if payment_method == "virtual_coin":
+                virtual_coin_total += amount
+            else:
+                wechat_total += amount
+        elif entry_type == "refund":
+            refund_total += abs(amount)
+
+    net_total = order_total + tip_total - refund_total
+
+    return {
+        "entry_count": len(entries),
+        "order_total": float(order_total),
+        "tip_total": float(tip_total),
+        "refund_total": float(refund_total),
+        "net_total": float(net_total),
+        "virtual_coin_total": float(virtual_coin_total),
+        "wechat_total": float(wechat_total),
+        "free_order_count": free_order_count,
+    }
+
+
+def _collect_couple_ledger_entries(
+    db: Session,
+    relationship: CoupleRelationship,
+    period: str = "all",
+) -> tuple[list[dict], dict, list[Order], list[Tip]]:
+    window = _resolve_period_window(period, relationship)
+    user_ids = _relationship_user_ids(relationship)
+
+    orders = db.query(Order).filter(
+        Order.is_deleted == False,
+        Order.foodie_id.in_(user_ids),
+    ).order_by(Order.created_at.desc()).all()
+
+    paid_tips = db.query(Tip).filter(
+        Tip.foodie_id.in_(user_ids),
+        Tip.status == "paid",
+    ).order_by(Tip.created_at.desc()).all()
+
+    entries: list[dict] = []
+
+    for order in orders:
+        total_price = _to_decimal(order.total_price)
+        payer = order.foodie
+        chef = order.chef
+
+        if order.status != "unpaid" and _is_between(order.created_at, window["start_dt"], window["end_dt"]):
+            entry_type = "free_order" if order.payment_method == "free" or total_price <= Decimal("0.00") else "order"
+            entries.append({
+                "id": f"order:{order.id}",
+                "type": entry_type,
+                "title": _format_order_entry_title(order),
+                "amount": float(total_price),
+                "payment_method": order.payment_method,
+                "status": order.status,
+                "created_at": order.created_at.isoformat() if order.created_at else None,
+                "payer": _partner_to_dict(payer),
+                "counterparty": {
+                    "id": chef.id,
+                    "nickname": chef.nickname,
+                    "avatar": chef.avatar,
+                } if chef else None,
+                "order_id": order.id,
+                "order_no": order.order_no,
+                "note": order.remarks,
+            })
+
+        refund_amount = _to_decimal(order.refund_amount)
+        if refund_amount > Decimal("0.00") and _is_between(order.refunded_at, window["start_dt"], window["end_dt"]):
+            entries.append({
+                "id": f"refund:{order.id}",
+                "type": "refund",
+                "title": f"订单退款 · {order.order_no}",
+                "amount": float(-refund_amount),
+                "payment_method": order.payment_method,
+                "status": order.refund_status,
+                "created_at": order.refunded_at.isoformat() if order.refunded_at else None,
+                "payer": _partner_to_dict(payer),
+                "counterparty": {
+                    "id": chef.id,
+                    "nickname": chef.nickname,
+                    "avatar": chef.avatar,
+                } if chef else None,
+                "order_id": order.id,
+                "order_no": order.order_no,
+                "note": order.refund_reason,
+            })
+
+    for tip in paid_tips:
+        if not _is_between(tip.created_at, window["start_dt"], window["end_dt"]):
+            continue
+
+        payer = tip.foodie
+        chef = tip.chef
+        entries.append({
+            "id": f"tip:{tip.id}",
+            "type": "tip",
+            "title": f"打赏大厨 · {chef.nickname if chef else '感谢一下'}",
+            "amount": float(_to_decimal(tip.amount)),
+            "payment_method": "virtual_coin" if not tip.payment_id else "wechat",
+            "status": tip.status,
+            "created_at": tip.created_at.isoformat() if tip.created_at else None,
+            "payer": _partner_to_dict(payer),
+            "counterparty": {
+                "id": chef.id,
+                "nickname": chef.nickname,
+                "avatar": chef.avatar,
+            } if chef else None,
+            "order_id": tip.order_id,
+            "order_no": tip.order.order_no if tip.order else None,
+            "note": tip.message,
+        })
+
+    entries.sort(
+        key=lambda item: item.get("created_at") or "",
+        reverse=True,
+    )
+
+    summary = _build_ledger_summary(entries)
+    return entries, {**window, "summary": summary}, orders, paid_tips
+
+
+def get_couple_ledger(
+    db: Session,
+    current_user: User,
+    period: str = "all",
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    relationship = require_relationship(db, current_user)
+    entries, window, _, _ = _collect_couple_ledger_entries(db, relationship, period)
+
+    safe_page = max(page, 1)
+    safe_page_size = min(max(page_size, 1), 50)
+    total = len(entries)
+    start_index = (safe_page - 1) * safe_page_size
+    end_index = start_index + safe_page_size
+
+    return {
+        "period": window["period"],
+        "label": window["label"],
+        "range_start": window["start_date"].isoformat(),
+        "range_end": window["end_date"].isoformat(),
+        "summary": window["summary"],
+        "entries": entries[start_index:end_index],
+        "page_info": {
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "total": total,
+            "total_pages": max((total + safe_page_size - 1) // safe_page_size, 1),
+        },
+    }
+
+
+def get_couple_report(
+    db: Session,
+    current_user: User,
+    period: str = "week",
+) -> dict:
+    normalized_period = (period or "week").strip().lower()
+    if normalized_period not in REPORT_PERIODS:
+        raise CoupleServiceError("报告周期仅支持 week 或 month")
+
+    relationship = require_relationship(db, current_user)
+    entries, window, orders, paid_tips = _collect_couple_ledger_entries(db, relationship, normalized_period)
+    summary = window["summary"]
+
+    memos = [
+        memo for memo in list_memos(db, relationship)
+        if _is_between(memo.created_at, window["start_dt"], window["end_dt"])
+    ]
+    completed_memos = [
+        memo for memo in list_memos(db, relationship)
+        if memo.is_completed and _is_between(memo.updated_at or memo.created_at, window["start_dt"], window["end_dt"])
+    ]
+    date_plans = [
+        plan for plan in list_date_plans(db, relationship)
+        if _is_between(plan.plan_at, window["start_dt"], window["end_dt"])
+    ]
+    completed_date_plans = [
+        plan for plan in date_plans
+        if plan.status == "completed"
+    ]
+    wishes = [
+        wish for wish in list_restaurant_wishes(db, relationship, "all")
+        if _is_between(wish.created_at, window["start_dt"], window["end_dt"])
+    ]
+    fulfilled_wishes = [
+        wish for wish in list_restaurant_wishes(db, relationship, "all")
+        if wish.status == "done" and _is_between(wish.updated_at or wish.created_at, window["start_dt"], window["end_dt"])
+    ]
+    date_draws = [
+        draw for draw in list_date_draws(db, relationship)
+        if _is_between(draw.created_at, window["start_dt"], window["end_dt"])
+    ]
+    completed_draws = [
+        draw for draw in list_date_draws(db, relationship)
+        if draw.status == "completed" and _is_between(draw.updated_at or draw.created_at, window["start_dt"], window["end_dt"])
+    ]
+
+    upcoming_anniversaries = sorted(
+        [anniversary_to_dict(item) for item in list_anniversaries(db, relationship)],
+        key=lambda item: item["days_left"]
+    )
+    next_anniversary = upcoming_anniversaries[0] if upcoming_anniversaries else None
+
+    paid_orders = [
+        order for order in orders
+        if order.status != "unpaid" and _is_between(order.created_at, window["start_dt"], window["end_dt"])
+    ]
+    completed_orders = [order for order in paid_orders if order.status == "completed"]
+
+    dish_stats: dict[str, dict] = defaultdict(lambda: {"name": "", "quantity": 0, "amount": Decimal("0.00")})
+    for order in paid_orders:
+        for item in order.items:
+            stat = dish_stats[item.dish_name]
+            stat["name"] = item.dish_name
+            stat["quantity"] += item.quantity
+            stat["amount"] += _to_decimal(item.price) * Decimal(item.quantity)
+
+    top_dishes = sorted(
+        [
+            {
+                "name": stat["name"],
+                "quantity": stat["quantity"],
+                "amount": float(stat["amount"].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+            }
+            for stat in dish_stats.values()
+        ],
+        key=lambda item: (item["quantity"], item["amount"]),
+        reverse=True,
+    )[:3]
+
+    highlights: list[str] = []
+    if summary["net_total"] > 0:
+        highlights.append(
+            f"{window['label']}累计消费 ¥{summary['net_total']:.2f}，其中餐币支付 ¥{summary['virtual_coin_total']:.2f}"
+        )
+    if completed_orders or completed_date_plans:
+        highlights.append(
+            f"完成了 {len(completed_orders)} 笔下单，兑现了 {len(completed_date_plans)} 次约饭计划"
+        )
+    if top_dishes:
+        highlights.append(f"最常点的是 {top_dishes[0]['name']}，一共安排了 {top_dishes[0]['quantity']} 份")
+    elif next_anniversary:
+        highlights.append(f"下一个重要日子是 {next_anniversary['title']}，还有 {next_anniversary['days_left']} 天")
+
+    if not highlights:
+        highlights.append(f"{window['label']}先从一次下单或一条备忘录开始，新的情侣记录会自动沉淀到这里。")
+
+    return {
+        "period": window["period"],
+        "label": window["label"],
+        "range_start": window["start_date"].isoformat(),
+        "range_end": window["end_date"].isoformat(),
+        "summary": {
+            "love_days": _calculate_love_days(relationship.anniversary_date),
+            "entry_count": summary["entry_count"],
+            "order_count": len(paid_orders),
+            "completed_order_count": len(completed_orders),
+            "free_order_count": summary["free_order_count"],
+            "tip_count": len([entry for entry in entries if entry["type"] == "tip"]),
+            "date_plan_count": len(date_plans),
+            "completed_date_plan_count": len(completed_date_plans),
+            "memo_created_count": len(memos),
+            "memo_completed_count": len(completed_memos),
+            "wish_added_count": len(wishes),
+            "wish_done_count": len(fulfilled_wishes),
+            "date_draw_count": len(date_draws),
+            "date_draw_completed_count": len(completed_draws),
+            "tip_total": summary["tip_total"],
+            "refund_total": summary["refund_total"],
+            "net_total": summary["net_total"],
+            "virtual_coin_total": summary["virtual_coin_total"],
+            "wechat_total": summary["wechat_total"],
+        },
+        "top_dishes": top_dishes,
+        "next_anniversary": next_anniversary,
+        "highlights": highlights[:3],
+    }
+
+
 def get_dashboard(db: Session, current_user: User) -> dict:
     profile = get_couple_profile(db, current_user)
     if not profile["is_bound"]:
@@ -2171,10 +3043,20 @@ def get_dashboard(db: Session, current_user: User) -> dict:
             "date_plans": [],
             "restaurant_wishes": [],
             "date_draws": [],
+            "summary": {
+                "active_wish_count": 0,
+                "date_draw_count": 0,
+                "month_net_total": 0,
+                "week_activity_count": 0,
+            },
         }
 
     relationship = require_relationship(db, current_user)
     sync_due_notifications(db, relationship)
+    active_wishes = list_restaurant_wishes(db, relationship, "active")
+    recent_date_draws = list_date_draws(db, relationship)[:5]
+    monthly_ledger = get_couple_ledger(db, current_user, "month", 1, 1)
+    weekly_report = get_couple_report(db, current_user, "week")
 
     reminders = []
     today = _today()
@@ -2219,6 +3101,15 @@ def get_dashboard(db: Session, current_user: User) -> dict:
         "upcoming_anniversaries": upcoming_anniversaries,
         "memos": [memo_to_dict(memo) for memo in list_memos(db, relationship)],
         "date_plans": [date_plan_to_dict(plan) for plan in list_date_plans(db, relationship)[:3]],
-        "restaurant_wishes": [restaurant_wish_to_dict(wish) for wish in list_restaurant_wishes(db, relationship, "active")[:5]],
-        "date_draws": [date_draw_to_dict(draw) for draw in list_date_draws(db, relationship)[:5]],
+        "restaurant_wishes": [restaurant_wish_to_dict(wish) for wish in active_wishes[:5]],
+        "date_draws": [date_draw_to_dict(draw) for draw in recent_date_draws],
+        "summary": {
+            "active_wish_count": len(active_wishes),
+            "date_draw_count": len(recent_date_draws),
+            "month_net_total": monthly_ledger["summary"]["net_total"],
+            "week_activity_count": (
+                weekly_report["summary"]["completed_order_count"] +
+                weekly_report["summary"]["completed_date_plan_count"]
+            ),
+        },
     }

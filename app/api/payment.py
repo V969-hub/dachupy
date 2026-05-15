@@ -1,7 +1,7 @@
 """
 支付API路由模块
 
-实现支付回调接口。
+实现历史支付回调兼容接口。
 
 Requirements:
 - 8.2: 支付回调验证
@@ -23,13 +23,13 @@ router = APIRouter(prefix="/payment", tags=["Payment"])
 @router.post("/notify")
 async def payment_notify(request: Request, db: Session = Depends(get_db)):
     """
-    微信支付回调通知接口
+    历史订单支付回调通知接口
     
-    接收微信支付结果通知，验证签名并更新订单状态。
+    接收历史支付结果通知，验证签名并更新订单状态。
     
     Requirements: 8.2
     
-    注意：此接口由微信服务器调用，不需要JWT认证
+    注意：此接口由历史支付服务回调，不需要JWT认证
     """
     # 读取原始XML数据
     xml_data = await request.body()
@@ -58,11 +58,11 @@ async def payment_notify(request: Request, db: Session = Depends(get_db)):
 @router.post("/tip/notify")
 async def tip_payment_notify(request: Request, db: Session = Depends(get_db)):
     """
-    打赏支付回调通知接口
+    历史打赏支付回调通知接口
     
-    接收微信支付结果通知，验证签名并更新打赏状态。
+    接收历史支付结果通知，验证签名并更新打赏状态。
     
-    注意：此接口由微信服务器调用，不需要JWT认证
+    注意：此接口仅为历史兼容保留，不需要JWT认证
     """
     # 读取原始XML数据
     xml_data = await request.body()
